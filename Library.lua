@@ -1734,15 +1734,33 @@ local Library; do
                 }   
 
                 local Items = Cfg.Items; do 
-                    Items.Keybind = Library:Create("CanvasGroup",{Parent = self.Window.Items.Elements.Instance; BackgroundTransparency = 1; BorderSizePixel = 0; AutomaticSize = Enum.AutomaticSize.XY; BackgroundColor3 = Color3.fromRGB(255, 255, 255)})
-                    Items.Title = Library:Create("TextLabel",{TextColor3 = Themes.Preset.TextMain; Text = Cfg.Text; Parent = Items.Keybind.Instance; BackgroundTransparency = 1; BorderSizePixel = 0; RichText = true; AutomaticSize = Enum.AutomaticSize.XY; BackgroundColor3 = Color3.fromRGB(255, 255, 255)})
+                    Items.Keybind = Library:Create("CanvasGroup",{Parent = self.Window.Items.Elements.Instance; BackgroundTransparency = 1; BorderSizePixel = 0; Size = UDim2.fromOffset(0, 19); AutomaticSize = Enum.AutomaticSize.None; BackgroundColor3 = Color3.fromRGB(255, 255, 255)})
+                    Items.Title = Library:Create("TextLabel",{TextColor3 = Themes.Preset.TextMain; Text = Cfg.Text or ""; Parent = Items.Keybind.Instance; BackgroundTransparency = 1; BorderSizePixel = 0; RichText = true; TextWrapped = false; TextTruncate = Enum.TextTruncate.None; AutomaticSize = Enum.AutomaticSize.XY; BackgroundColor3 = Color3.fromRGB(255, 255, 255)})
                     Items.UIStroke = Library:Create("UIStroke",{Parent = Items.Title.Instance; LineJoinMode = Enum.LineJoinMode.Miter})
                     Items.UIPadding = Library:Create("UIPadding",{PaddingTop = UDim.new(0, 3); PaddingBottom = UDim.new(0, 3); Parent = Items.Keybind.Instance})
-                end     
+                end
+
+                local function syncKeybindSize()
+                    local title = Items.Title.Instance
+                    if not title.Parent then return end
+                    local bounds = title.TextBounds
+                    local textWidth = math.ceil(math.max(bounds.X, title.AbsoluteSize.X))
+                    local textHeight = math.ceil(math.max(bounds.Y, title.TextSize))
+                    Cfg.TextWidth = textWidth + 10
+                    local size = UDim2.fromOffset(Cfg.TextWidth, textHeight + 6)
+                    if Items.Keybind.Instance.Size ~= size then
+                        Items.Keybind.Instance.Size = size
+                    end
+                end
+                for _, property in {"TextBounds", "TextSize", "FontFace"} do
+                    Library:Connect(Items.Title.Instance:GetPropertyChangedSignal(property), syncKeybindSize)
+                end
+                Library:RegisterMainTextLayout(syncKeybindSize)
 
                 function Cfg:ChangeText(Key, Name, Mode)
                     Items.Title.Instance.Text = string.format("[%s] %s (%s)", Key, Name, Mode)
-                end 
+                    syncKeybindSize()
+                end
 
                 function Cfg:SetEnabled(Bool)
                     Cfg.Status = Bool
@@ -1772,8 +1790,8 @@ local Library; do
                     Instance.Position = Offset + UDim2.new(0, -(Instance.AbsoluteSize.X - (Instance.AbsoluteSize.X * (Object.Fade / 255))), 0, YOffset)
                     Object:SetKeypickerTransparency(Transparency)
 
-                    if Object.Status and BiggestX < Instance.AbsoluteSize.X then
-                        BiggestX = math.max(BiggestX, Instance.AbsoluteSize.X * (Object.Fade / 255))
+                    if Object.Status or Object.Fade > 1 then
+                        BiggestX = math.max(BiggestX, Object.TextWidth or Instance.AbsoluteSize.X)
                     end
 
                     YOffset += (Instance.AbsoluteSize.Y + 5) * (Object.Fade / 255)
@@ -1785,7 +1803,7 @@ local Library; do
 
                 if not Shown then                    
                     self.Window.Items.Elements.Instance.Size = UDim2.new(1, -8, 0, YOffset)
-                    self.Window.Items.KeybindList.Instance.Size = UDim2.new(0, BiggestX + 17, 0, YOffset + 29)
+                    self.Window.Items.KeybindList.Instance.Size = UDim2.fromOffset(math.ceil(BiggestX + 17), math.ceil(YOffset + 29))
                 end
 
                 KbList.GroupTransparency = KeybindListTransparency / 255
@@ -1888,7 +1906,7 @@ local Library; do
                 local Mt = setmetatable(Info, Library)
 
                 for Property, Value in Info.Properties do
-                    if Property == "ScrollingBarImageColor3" then 
+                    if Property == "Parent" or Property == "ScrollingBarImageColor3" then
                         continue 
                     end 
 
@@ -1955,6 +1973,9 @@ local Library; do
                 end 
 
                 Instance.Name = "\0"
+                -- Attach fully styled objects once, rather than invalidating a live
+                -- layout for each property applied during construction.
+                Instance.Parent = Info.Properties.Parent
 
                 return Mt
             end
@@ -2095,6 +2116,7 @@ local Library; do
 
             Library.LightweightWindowDrag = true
             Library.Draggify = function(self)
+                local library = Library
                 local instance = self.Instance
                 local dragging = false
                 local dragInput
@@ -2102,10 +2124,11 @@ local Library; do
                 local latestPointer
                 local startPosition
                 local lastPosition
-                local dragAccumulator = 0
                 local preview
                 local dragTarget
-                Library.Dragging = false
+                local originalVisible
+                local dragTask
+                local destroyed = false
 
                 local function clearPreview(commit)
                     if preview then
@@ -2115,32 +2138,36 @@ local Library; do
                         preview:Destroy()
                         preview = nil
                         dragTarget = nil
-                        if instance.Parent then instance.Visible = true end
+                        if instance.Parent and not destroyed and not library.Unloaded then
+                            instance.Visible = originalVisible
+                        end
                     end
                 end
 
-                local function stopDragging()
+                local function stopDragging(commit)
                     if not dragging then return end
                     dragging = false
-                    Library.Dragging = false
+                    library.Dragging = false
                     dragInput = nil
-                    clearPreview(true)
+                    dragTask:Stop()
+                    clearPreview(commit ~= false)
                 end
 
-                Library:Connect(instance.InputBegan, function(input)
+                library:Connect(instance.InputBegan, function(input)
                     local kind = input.UserInputType
-                    if Library.Dragging or (kind ~= Enum.UserInputType.MouseButton1 and kind ~= Enum.UserInputType.Touch) then
+                    if destroyed or library.Unloaded or library.Dragging or
+                        (kind ~= Enum.UserInputType.MouseButton1 and kind ~= Enum.UserInputType.Touch) then
                         return
                     end
                     dragging = true
-                    Library.Dragging = true
+                    library.Dragging = true
                     dragInput = input
                     startPointer = input.Position
                     latestPointer = startPointer
                     startPosition = instance.Position
                     lastPosition = startPosition
-                    dragAccumulator = 1 / 60
-                    if Library.LightweightWindowDrag and instance.Name == "GamehaxxMainWindow" then
+                    originalVisible = instance.Visible
+                    if library.LightweightWindowDrag and instance.Name == "GamehaxxMainWindow" then
                         local ghost = Instance.new("Frame")
                         ghost.Name = "GamehaxxDragPreview"
                         ghost.Size = instance.Size
@@ -2152,12 +2179,12 @@ local Library; do
                         ghost.Active = false
                         local stroke = Instance.new("UIStroke")
                         stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-                        stroke.Color = Library.Themes.Preset.Accent
+                        stroke.Color = library.Themes.Preset.Accent
                         stroke.Thickness = 1
                         stroke.Parent = ghost
                         local label = Instance.new("TextLabel")
                         label.BackgroundTransparency = 1
-                        label.Text = Library.Window and Library.Window.Title or "gamehaxx"
+                        label.Text = library.Window and library.Window.Title or "gamehaxx"
                         label.TextColor3 = Color3.fromRGB(225, 225, 235)
                         label.TextXAlignment = Enum.TextXAlignment.Left
                         label.Font = Enum.Font.Code
@@ -2169,7 +2196,7 @@ local Library; do
                         local line = Instance.new("Frame")
                         line.Name = "DragPreviewTitleRule"
                         line.BorderSizePixel = 0
-                        line.BackgroundColor3 = Library.Themes.Preset.Accent
+                        line.BackgroundColor3 = library.Themes.Preset.Accent
                         line.Position = UDim2.fromOffset(5, 21)
                         line.Size = UDim2.new(1, -10, 0, 1)
                         line.ZIndex = 31
@@ -2178,41 +2205,24 @@ local Library; do
                         preview = ghost
                         dragTarget = instance.Position
                         instance.Visible = false
-                        for owner, popup in Library.PopupOwners or {} do
+                        for owner, popup in library.PopupOwners or {} do
                             if popup.Visible then
                                 popup.Visible = false
                                 owner.Open = false
                             end
                         end
                     end
+                    dragTask:Start()
                 end)
 
-                Library:Connect(Services.UserInputService.InputEnded, function(input)
-                    if not dragging then return end
-                    if input == dragInput or
-                        (dragInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
-                        stopDragging()
-                    end
-                end)
-
-                Library:Connect(Services.UserInputService.InputChanged, function(input)
+                library:Connect(Services.UserInputService.InputChanged, function(input)
                     if not dragging then return end
                     if input.UserInputType == Enum.UserInputType.MouseMovement or input == dragInput then
                         latestPointer = input.Position
                     end
                 end)
 
-                Library:Connect(Services.RunService.RenderStepped, function(dt)
-                    if not dragging then return end
-                    if not instance.Parent then
-                        dragging = false
-                        Library.Dragging = false
-                        if preview then preview:Destroy(); preview = nil end
-                        return
-                    end
-                    dragAccumulator = math.min(dragAccumulator + dt, 1 / 30)
-                    if dragAccumulator < 1 / 60 then return end
-                    dragAccumulator -= 1 / 60
+                local function move()
                     local delta = latestPointer - startPointer
                     local nextPosition = UDim2.new(
                         startPosition.X.Scale, startPosition.X.Offset + math.round(delta.X),
@@ -2227,6 +2237,28 @@ local Library; do
                         end
                         lastPosition = nextPosition
                     end
+                end
+                dragTask = library:CreateRenderTask(function()
+                    if not dragging then dragTask:Stop(); return end
+                    if destroyed or library.Unloaded or not instance.Parent then
+                        stopDragging(false)
+                        return
+                    end
+                    move()
+                end, 1 / 60)
+                -- Commit the newest cursor position even when release falls between frames.
+                library:Connect(Services.UserInputService.InputEnded, function(input)
+                    if dragging and (input == dragInput or
+                        (dragInput.UserInputType == Enum.UserInputType.MouseButton1 and
+                        input.UserInputType == Enum.UserInputType.MouseButton1)) then
+                        move()
+                        stopDragging()
+                    end
+                end)
+                library:Connect(Services.UserInputService.WindowFocusReleased, stopDragging)
+                library:Connect(instance.Destroying, function()
+                    destroyed = true
+                    stopDragging(false)
                 end)
 
                 return self
@@ -2723,6 +2755,7 @@ local Library; do
             end 
 
             Library.GetConfig = function(self)
+                self:EnsureReferenceDeferredTabs()
                 local Config = {}
 
                 for Idx, Value in Flags do
@@ -2740,6 +2773,7 @@ local Library; do
 
             Library.LoadConfig = function(self, JSON) 
                 local Config = Services.HttpService:JSONDecode(JSON)
+                self:EnsureReferenceDeferredTabs()
 
                 for Idx, Value in Config do  
                     local Function = ConfigFlags[Idx]
@@ -2834,16 +2868,37 @@ local Library; do
                 local ConnectionInfo = {
                     Event = Signal,
                     Callback = Callback,
-                    Connection,
+                    Connection = Signal:Connect(Callback),
                 }
-
-                Library:Thread(function()
-                    ConnectionInfo.Connection = Signal:Connect(Callback)
-                end)
 
                 table.insert(self.Connections, ConnectionInfo)
 
                 return ConnectionInfo
+            end
+
+            -- Animation work subscribes only while it is moving. Keep one tracked
+            -- record across restarts instead of retaining a new connection each time.
+            Library.CreateRenderTask = function(self, Callback, Interval)
+                local Owner = self
+                local Info = {Event = Services.RunService.RenderStepped, Callback = Callback,
+                    Interval = Interval or 0, Elapsed = 0}
+                table.insert(self.Connections, Info)
+                function Info:Stop()
+                    if self.Connection then self.Connection:Disconnect(); self.Connection = nil end
+                    self.Elapsed = 0
+                end
+                function Info:Start()
+                    if Owner.Unloaded or Owner.Unloading or self.Connection then return end
+                    self.Connection = self.Event:Connect(function(dt)
+                        if Owner.Unloaded or Owner.Unloading then self:Stop(); return end
+                        self.Elapsed += dt
+                        if self.Elapsed < self.Interval then return end
+                        local elapsed = self.Elapsed
+                        self.Elapsed = self.Interval > 0 and (self.Elapsed % self.Interval) or 0
+                        Callback(elapsed)
+                    end)
+                end
+                return Info
             end
 
             Library.Delay = function(self)
@@ -2857,16 +2912,25 @@ local Library; do
             end
 
             Library.Unload = function(self)
+                if self.Unloaded or self.Unloading then return end
+                self.Unloading = true
                 repeat task.wait() until #self.Notifications == 0
+                self.Unloaded = true
 
                 for Index, Value in self.Connections do
-                    if Value.Connection then
+                    if Value.Stop then
+                        Value:Stop()
+                    elseif Value.Connection then
                         Value.Connection:Disconnect()
+                        Value.Connection = nil
                     end
                 end
 
                 for Index, Value in self.Threads do
-                    coroutine.close(Value)
+                    if Value ~= coroutine.running() and coroutine.status(Value) ~= "dead" then
+                        local cancelled = pcall(task.cancel, Value)
+                        if not cancelled then pcall(coroutine.close, Value) end
+                    end
                 end
 
                 for _, Item in self.Guis do
@@ -2955,7 +3019,7 @@ local Library; do
                 Items.WatermarkInline = Library:Create("Frame",{Parent = Items.Watermark.Instance; Position = UDim2.fromOffset(1, 1); Size = UDim2.new(1, -2, 1, -2); BorderSizePixel = 0; BackgroundColor3 = Color3.fromRGB(28, 27, 34)})
                 Items.WatermarkBackground = Library:Create("Frame",{Parent = Items.WatermarkInline.Instance; Position = UDim2.fromOffset(1, 1); Size = UDim2.new(1, -2, 1, -2); BorderSizePixel = 0; BackgroundColor3 = Color3.new(1, 1, 1)})
                 Items.WatermarkGradient = Library:Create("UIGradient",{Rotation = 90; Parent = Items.WatermarkBackground.Instance; Color = ColorSeq{ColorKey(0, Color3.fromRGB(22, 21, 28)), ColorKey(1, Color3.fromRGB(18, 17, 24))}})
-                Items.WatermarkTitle = Library:Create("TextLabel",{TextColor3 = Color3.fromRGB(235, 235, 250); Text = Cfg.Title .. " - 0 fps - 0 ping"; Parent = Items.WatermarkBackground.Instance; BorderSizePixel = 0; BackgroundTransparency = 1; Position = UDim2.fromOffset(5, 2); Size = UDim2.new(1, -12, 1, -4); TextXAlignment = Enum.TextXAlignment.Left; TextYAlignment = Enum.TextYAlignment.Center; RichText = false; AutomaticSize = Enum.AutomaticSize.None; TextWrapped = false; TextTruncate = Enum.TextTruncate.None})
+                Items.WatermarkTitle = Library:Create("TextLabel",{TextColor3 = Color3.fromRGB(235, 235, 250); Text = Cfg.Title .. " - 0 fps - 0 ping"; Parent = Items.WatermarkBackground.Instance; BorderSizePixel = 0; BackgroundTransparency = 1; Position = UDim2.fromOffset(5, 2); Size = UDim2.new(1, -10, 1, -4); TextXAlignment = Enum.TextXAlignment.Left; TextYAlignment = Enum.TextYAlignment.Center; RichText = false; AutomaticSize = Enum.AutomaticSize.None; TextWrapped = false; TextTruncate = Enum.TextTruncate.None})
                 Items.WatermarkStroke = Library:Create("UIStroke",{Parent = Items.WatermarkTitle.Instance; LineJoinMode = Enum.LineJoinMode.Miter; Color = Color3.new(0, 0, 0); Thickness = 1})
 
                 Items.WatermarkGlowHolder = Library:Create("CanvasGroup",{Parent = Library.HUD.Instance; BackgroundTransparency = 1; BorderSizePixel = 0; Active = false; ZIndex = 1; ClipsDescendants = false; GroupTransparency = Items.Watermark.Instance.GroupTransparency})
@@ -2963,10 +3027,13 @@ local Library; do
                 Library:RegisterGlow("Main", Items.WatermarkGlow, Data.WatermarkGlowTransparency)
                 local function syncWatermarkGlow()
                     local root, holder = Items.Watermark.Instance, Items.WatermarkGlowHolder.Instance
-                    holder.Position = root.Position + UDim2.fromOffset(-14, -14)
-                    holder.Size = root.Size + UDim2.fromOffset(28, 28)
-                    holder.GroupTransparency = root.GroupTransparency
-                    holder.Visible = root.Visible and root.Parent ~= nil
+                    local position = root.Position + UDim2.fromOffset(-14, -14)
+                    local size = root.Size + UDim2.fromOffset(28, 28)
+                    local visible = root.Visible and root.Parent ~= nil and root.GroupTransparency < 1
+                    if holder.Position ~= position then holder.Position = position end
+                    if holder.Size ~= size then holder.Size = size end
+                    if holder.GroupTransparency ~= root.GroupTransparency then holder.GroupTransparency = root.GroupTransparency end
+                    if holder.Visible ~= visible then holder.Visible = visible end
                     if root.Parent and holder.Parent ~= root.Parent then holder.Parent = root.Parent end
                 end
                 for _, property in {"Position", "Size", "Visible", "GroupTransparency", "Parent"} do
@@ -2974,62 +3041,82 @@ local Library; do
                 end
                 local measuredWatermarkBounds = {}
                 local watermarkMeasurementKeys = {}
+                local watermarkMeasurementCursor = 1
                 local watermarkMeasurementRevision = 0
-                local fittingWatermark = false
+                local watermarkFitQueued = false
+                local watermarkMeasuring = false
+                local function watermarkMeasurementKey(label)
+                    local face = label.FontFace
+                    return label.Text .. "\0" .. tostring(label.TextSize) .. "\0" .. face.Family .. "\0" .. tostring(face.Weight) .. "\0" .. tostring(face.Style)
+                end
+                local function rememberWatermarkBounds(key, bounds)
+                    if not measuredWatermarkBounds[key] then
+                        local previous = watermarkMeasurementKeys[watermarkMeasurementCursor]
+                        if previous then measuredWatermarkBounds[previous] = nil end
+                        watermarkMeasurementKeys[watermarkMeasurementCursor] = key
+                        watermarkMeasurementCursor = watermarkMeasurementCursor % 64 + 1
+                    end
+                    measuredWatermarkBounds[key] = bounds
+                end
                 local function applyWatermarkBounds(bounds)
-                    if fittingWatermark or not Items.Watermark.Instance.Parent then return end
-                    fittingWatermark = true
+                    if not Items.Watermark.Instance.Parent then return end
                     local label = Items.WatermarkTitle.Instance
-
                     local current = Items.Watermark.Instance.Size
-                    local width = math.max(186, current.X.Offset, math.ceil(bounds.X) + 16)
-                    local height = math.max(24, current.Y.Offset, label.TextSize + 12, math.ceil(bounds.Y) + 12)
+                    -- The label starts seven pixels from the outer edge; leave the same on the right.
+                    local width = math.max(14, math.ceil(bounds.X) + 14)
+                    local height = math.max(24, label.TextSize + 12, math.ceil(bounds.Y) + 12)
                     if current.X.Offset ~= width or current.Y.Offset ~= height then
                         Items.Watermark.Instance.Size = UDim2.fromOffset(width, height)
                     end
-                    fittingWatermark = false
                 end
                 local function fitWatermark()
                     local label = Items.WatermarkTitle.Instance
                     if not label.Parent or not Items.Watermark.Instance.Parent then return end
                     watermarkMeasurementRevision += 1
-                    local revision = watermarkMeasurementRevision
-
-                    local text = label.Text:gsub("%d+ fps", "8888 fps"):gsub("%d+ ping", "8888 ping")
-                    local size, face = label.TextSize, label.FontFace
-                    local key = text .. "\0" .. tostring(size) .. "\0" .. face.Family .. "\0" .. tostring(face.Weight) .. "\0" .. tostring(face.Style)
-                    if measuredWatermarkBounds[key] then
-                        applyWatermarkBounds(measuredWatermarkBounds[key])
-                        return
-                    end
-
-                    applyWatermarkBounds(label.TextBounds)
-                    task.spawn(function()
-                        local ok, bounds = pcall(function()
-                            local parameters = Instance.new("GetTextBoundsParams")
-                            parameters.Text, parameters.Font, parameters.Size = text, face, size
-                            parameters.Width, parameters.RichText = 100000, false
-                            local result = Services.TextService:GetTextBoundsAsync(parameters)
-                            parameters:Destroy()
-                            return result
-                        end)
-                        if ok and not measuredWatermarkBounds[key] then
-                            measuredWatermarkBounds[key] = bounds
-                            table.insert(watermarkMeasurementKeys, key)
-                            if #watermarkMeasurementKeys > 128 then
-                                measuredWatermarkBounds[table.remove(watermarkMeasurementKeys, 1)] = nil
+                    if watermarkFitQueued or watermarkMeasuring then return end
+                    watermarkFitQueued = true
+                    task.defer(function()
+                        watermarkFitQueued = false
+                        if not label.Parent or not Items.Watermark.Instance.Parent then return end
+                        watermarkMeasuring = true
+                        repeat
+                            local revision = watermarkMeasurementRevision
+                            local key = watermarkMeasurementKey(label)
+                            local bounds = measuredWatermarkBounds[key]
+                            if not bounds then
+                                local parameters = Instance.new("GetTextBoundsParams")
+                                parameters.Text, parameters.Font, parameters.Size = label.Text, label.FontFace, label.TextSize
+                                parameters.Width, parameters.RichText = 100000, false
+                                local ok, result = pcall(function()
+                                    return Services.TextService:GetTextBoundsAsync(parameters)
+                                end)
+                                parameters:Destroy()
+                                if ok then
+                                    bounds = result
+                                    rememberWatermarkBounds(key, bounds)
+                                elseif revision == watermarkMeasurementRevision then
+                                    bounds = label.TextBounds
+                                end
                             end
-                        end
-                        if revision == watermarkMeasurementRevision and label.Parent then
-                            applyWatermarkBounds(ok and bounds or label.TextBounds)
-                        end
+                            if revision == watermarkMeasurementRevision then
+                                if bounds then applyWatermarkBounds(bounds) end
+                                break
+                            end
+                        until not label.Parent or not Items.Watermark.Instance.Parent
+                        watermarkMeasuring = false
                     end)
                 end
                 for _, property in {"Text", "TextSize", "FontFace"} do
                     Library:Connect(Items.WatermarkTitle.Instance:GetPropertyChangedSignal(property), fitWatermark)
                 end
                 Library:Connect(Items.WatermarkTitle.Instance:GetPropertyChangedSignal("TextBounds"), function()
-                    if not fittingWatermark then applyWatermarkBounds(Items.WatermarkTitle.Instance.TextBounds) end
+                    local label = Items.WatermarkTitle.Instance
+                    local bounds = label.TextBounds
+                    if bounds.X > 0 or label.Text == "" then
+                        -- Roblox already measured this exact text; avoid a service request for FPS changes.
+                        rememberWatermarkBounds(watermarkMeasurementKey(label), bounds)
+                        applyWatermarkBounds(bounds)
+                    end
                 end)
                 Library:RegisterMainTextLayout(fitWatermark)
                 syncWatermarkGlow()
@@ -3050,26 +3137,46 @@ local Library; do
 
             local Frames = 0
             local FPS = 0
-            local LastTick = tick()
+            local elapsedFrames = 0
+            local watermarkRefreshRate = math.max(0.05, tonumber(Flags["Refresh Rate"]) or 0.1)
             local GameName = ""
-            local gameInfoOk, gameInfo = pcall(function()
-                return Services.MarketplaceService:GetProductInfo(game.PlaceId)
-            end)
-            if gameInfoOk and gameInfo then GameName = gameInfo.Name or "" end
+            local requestedGameName = false
+            local currentDate = os.date("%b %d, %Y")
+            local dateRefreshTime = 1
+            local titlePrefix, titleSuffix, titleColor, titleDate
+            local defaultWatermarkOptions = {"Title", "Fps", "Ping"}
 
-            Library:Connect(Services.RunService.RenderStepped, function()
+            Library:Connect(Services.RunService.RenderStepped, function(dt)
                 Frames += 1
-                local Tick = tick()
-                local elapsed = Tick - LastTick
-                if elapsed < math.max(0.05, tonumber(Flags["Refresh Rate"]) or 0.1) then
-                    return
+                elapsedFrames += dt
+                if elapsedFrames < watermarkRefreshRate then return end
+
+                local elapsed = elapsedFrames
+                FPS = math.floor(Frames / math.max(elapsed, 0.001) + 0.5)
+                Frames, elapsedFrames = 0, 0
+                watermarkRefreshRate = math.max(0.05, tonumber(Flags["Refresh Rate"]) or 0.1)
+                dateRefreshTime -= elapsed
+                if dateRefreshTime <= 0 then
+                    currentDate = os.date("%b %d, %Y")
+                    dateRefreshTime = 1
                 end
 
-                LastTick = Tick
-                FPS = math.floor(Frames / math.max(elapsed, 0.001) + 0.5)
-                Frames = 0
+                local mainTitle = Items.Title.Instance
+                local color = Themes.Preset.TextMain
+                if mainTitle.Parent and (titlePrefix ~= Cfg.Prefix or titleSuffix ~= Cfg.Suffix or titleColor ~= color or titleDate ~= currentDate) then
+                    titlePrefix, titleSuffix, titleColor, titleDate = Cfg.Prefix, Cfg.Suffix, color, currentDate
+                    local text = string.format(
+                        '%s<font color = "rgb(%s, %s, %s)">%s ~ %s</font>',
+                        Cfg.Prefix,
+                        math.floor(color.R * 255), math.floor(color.G * 255), math.floor(color.B * 255),
+                        Cfg.Suffix, currentDate
+                    )
+                    if mainTitle.Text ~= text then mainTitle.Text = text end
+                end
 
-                local Strings = Flags["WatermarkSettings"] or {"Title", "Fps", "Ping"}
+                local watermark = Items.Watermark.Instance
+                if not watermark.Parent or not watermark.Visible or watermark.GroupTransparency >= 1 or not Library.HUD.Instance.Enabled then return end
+                local Strings = Flags["WatermarkSettings"] or defaultWatermarkOptions
 
                 local Parts = {}
 
@@ -3089,6 +3196,15 @@ local Library; do
                 end
 
                 if table.find(Strings, "Game Name") then
+                    if not requestedGameName then
+                        requestedGameName = true
+                        task.spawn(function()
+                            local ok, info = pcall(function()
+                                return Services.MarketplaceService:GetProductInfo(game.PlaceId)
+                            end)
+                            if ok and info then GameName = info.Name or "" end
+                        end)
+                    end
                     table.insert(Parts, GameName)
                 end
 
@@ -3101,20 +3217,11 @@ local Library; do
                 end
 
                 if table.find(Strings, "Date") then
-                    table.insert(Parts, os.date("%b %d, %Y"))
+                    table.insert(Parts, currentDate)
                 end
 
-                Items.WatermarkTitle.Instance.Text = table.concat(Parts, " - ")
-
-                Items.Title.Instance.Text = string.format(
-                    '%s<font color = "rgb(%s, %s, %s)">%s ~ %s</font>', 
-                    Cfg.Prefix, 
-                    math.floor(Themes.Preset.TextMain.R * 255),
-                    math.floor(Themes.Preset.TextMain.G * 255), 
-                    math.floor(Themes.Preset.TextMain.B * 255), 
-                    Cfg.Suffix,
-                    os.date("%b %d, %Y")
-                )
+                local text = table.concat(Parts, " - ")
+                if Items.WatermarkTitle.Instance.Text ~= text then Items.WatermarkTitle.Instance.Text = text end
             end)
 
             return Library.Window
@@ -6224,7 +6331,8 @@ local Library; do
             if not self.ReferenceKeyMenu then return originalKeyPosition(self, open, debounce) end
             self.Items.Settings.Instance.Position = keyPopupPosition(self)
         end
-        Library:Connect(Services.RunService.RenderStepped, function()
+        local keyPopupTask
+        keyPopupTask = Library:CreateRenderTask(function()
             for key in keyPopups do
                 local popup, value = key.Items.Settings.Instance, key.Items.Value.Instance
                 if not value.Parent then keyPopups[key] = nil; continue end
@@ -6233,9 +6341,11 @@ local Library; do
                     continue
                 end
                 if key.Open and popup.Visible and not key.OpeningMenu then
-                    popup.Position = keyPopupPosition(key)
+                    local position = keyPopupPosition(key)
+                    if popup.Position ~= position then popup.Position = position end
                 end
             end
+            if next(keyPopups) == nil then keyPopupTask:Stop() end
         end)
         local originalKey = Library.AddKeyPicker
         Library.AddKeyPicker = function(self, data)
@@ -6273,7 +6383,6 @@ local Library; do
             local popup = items.Settings.Instance
             key.ReferenceKeyMenu = true
             key.PopupOffset = data.PopupOffset or Vector2.new(-4, 40)
-            keyPopups[key] = true
             popup.Name = "KeybindSettings"
             popup.AutomaticSize = Enum.AutomaticSize.None
             popup.Size = UDim2.fromOffset(180, 63)
@@ -6363,10 +6472,14 @@ local Library; do
                 if not key.Open then
                     revision += 1
                     key.OpeningMenu = false
+                    keyPopups[key] = nil
+                    if next(keyPopups) == nil then keyPopupTask:Stop() end
                     mode.SetVisible(false, true)
                     popup.Visible = false
                     return
                 end
+                keyPopups[key] = true
+                keyPopupTask:Start()
                 popup.Visible = true
                 local target = keyPopupPosition(key)
                 if debounce or key.OpeningMenu then
@@ -6589,35 +6702,56 @@ local Library; do
         end
 
         local visuals = setmetatable({}, {__mode = "k"})
-        Library:Connect(Services.RunService.RenderStepped, function(dt)
+        local visualTask
+        local function drawVisual(slider, visual, settled)
+            local fill = slider.Items.Accent.Instance
+            local width = visual.Width or 0
+            local left, right = visual.Start * width, visual.End * width
+            if settled and not slider.Dragging and not slider.SlidingHandle then
+                left, right = math.round(left), math.round(right)
+            end
+            local position = UDim2.fromOffset(left, 0)
+            local size = UDim2.new(0, math.max(0, right - left), 1, 0)
+            if fill.Position ~= position then fill.Position = position end
+            if fill.Size ~= size then fill.Size = size end
+        end
+        visualTask = Library:CreateRenderTask(function(dt)
             for slider, visual in visuals do
                 local fill = slider.Items.Accent.Instance
                 if not fill.Parent then visuals[slider] = nil; continue end
-                local width = math.max(0, slider.Items.Holder.Instance.AbsoluteSize.X)
                 local alpha = slider.SmoothTime == 0 and 1 or (1 - math.exp(-dt / slider.SmoothTime))
-                local oldStart, oldEnd = visual.Start, visual.End
                 visual.Start += (visual.TargetStart - visual.Start) * alpha
                 visual.End += (visual.TargetEnd - visual.End) * alpha
-                local settled = math.max(math.abs(visual.TargetStart - visual.Start), math.abs(visual.TargetEnd - visual.End)) * math.max(1, width) < 0.05
+                local settled = math.max(math.abs(visual.TargetStart - visual.Start), math.abs(visual.TargetEnd - visual.End)) * math.max(1, visual.Width) < 0.05
                 if settled then visual.Start, visual.End = visual.TargetStart, visual.TargetEnd end
-                if oldStart ~= visual.Start or oldEnd ~= visual.End or visual.Width ~= width or visual.Dirty then
-                    local left, right = visual.Start * width, visual.End * width
-                    if settled and not slider.Dragging and not slider.SlidingHandle then
-                        left, right = math.round(left), math.round(right)
-                    end
-                    fill.Position = UDim2.fromOffset(left, 0)
-                    fill.Size = UDim2.new(0, math.max(0, right - left), 1, 0)
-                    visual.Width, visual.Dirty = width, false
-                end
+                drawVisual(slider, visual, settled)
+                if settled then visuals[slider] = nil end
             end
+            if next(visuals) == nil then visualTask:Stop() end
         end)
         local function installVisual(slider, data)
             local fill = slider.Items.Accent.Instance
-
             Services.TweenService:Create(fill, TweenInfo.new(0), {Size = fill.Size, Position = fill.Position}):Play()
             slider.SmoothTime = data.Smooth == false and 0 or math.clamp(number(data.SmoothTime, 0.06), 0.01, 0.5)
-            local visual = {Start = 0, End = 0, TargetStart = 0, TargetEnd = 0, Dirty = true}
-            visuals[slider], slider.VisualState = visual, visual
+            local holder = slider.Items.Holder.Instance
+            local visual = {Start = 0, End = 0, TargetStart = 0, TargetEnd = 0, Width = math.max(0, holder.AbsoluteSize.X)}
+            slider.VisualState = visual
+            local function target(first, last, immediate)
+                visual.TargetStart, visual.TargetEnd = first, last
+                if immediate or slider.SmoothTime == 0 then
+                    visual.Start, visual.End = first, last
+                    visuals[slider] = nil
+                    drawVisual(slider, visual, true)
+                else
+                    visuals[slider] = visual
+                    visualTask:Start()
+                end
+            end
+            visual.SetTarget = target
+            Library:Connect(holder:GetPropertyChangedSignal("AbsoluteSize"), function()
+                visual.Width = math.max(0, holder.AbsoluteSize.X)
+                drawVisual(slider, visual, visuals[slider] == nil)
+            end)
             local bar = slider.Items.Outline.Instance
             Library:Connect(bar.InputBegan, function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then slider.Dragging = true end
@@ -6625,26 +6759,19 @@ local Library; do
             Library:Connect(Services.UserInputService.InputEnded, function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
                     local wasDragging = slider.Dragging or slider.SlidingHandle ~= nil
+                    if not wasDragging then return end
                     slider.Dragging = false
                     slider.SlidingHandle = nil
-                    if wasDragging then
-                        local span = slider.Max - slider.Min
-                        if type(slider.Value) == "table" then
-                            visual.TargetStart = span == 0 and 0 or (slider.Value[1] - slider.Min) / span
-                            visual.TargetEnd = span == 0 and 0 or (slider.Value[2] - slider.Min) / span
-                        else
-                            visual.TargetStart = 0
-                            visual.TargetEnd = span == 0 and 0 or (slider.Value - slider.Min) / span
-                        end
+                    local span = slider.Max - slider.Min
+                    if type(slider.Value) == "table" then
+                        target(span == 0 and 0 or (slider.Value[1] - slider.Min) / span,
+                            span == 0 and 0 or (slider.Value[2] - slider.Min) / span)
+                    else
+                        target(0, span == 0 and 0 or (slider.Value - slider.Min) / span)
                     end
-                    visual.Dirty = true
                 end
             end)
-            return function(first, last, immediate)
-                visual.TargetStart, visual.TargetEnd = first, last
-                if immediate or slider.SmoothTime == 0 then visual.Start, visual.End = first, last end
-                visual.Dirty = true
-            end
+            return target
         end
 
         Library.OnDrag = function(self, moved, changed)
@@ -6824,8 +6951,7 @@ local Library; do
             self.Set(self.Min + (self.Max - self.Min) * ratio)
             local visual = self.VisualState
             if visual then
-                visual.TargetStart, visual.TargetEnd = 0, ratio
-                visual.Dirty = true
+                visual.SetTarget(0, ratio)
             end
         end
         Library.UpdateRangeSlider = function(self, input)
@@ -6859,9 +6985,7 @@ local Library; do
             if visual then
                 local startAlpha = span == 0 and 0 or (self.Value[1] - self.Min) / span
                 local endAlpha = span == 0 and 0 or (self.Value[2] - self.Min) / span
-                visual.Start, visual.TargetStart = startAlpha, startAlpha
-                visual.End, visual.TargetEnd = endAlpha, endAlpha
-                visual.Dirty = true
+                visual.SetTarget(startAlpha, endAlpha, true)
             end
         end
 
@@ -6887,11 +7011,13 @@ local Library; do
             if not dropdown.Open then return end
             local position, width = popupPosition(dropdown)
             local popup = dropdown.Items.DropdownHolder.Instance
-            popup.Size = UDim2.fromOffset(width, popup.Size.Y.Offset)
-            popup.Position = position
+            local size = UDim2.fromOffset(width, popup.Size.Y.Offset)
+            if popup.Size ~= size then popup.Size = size end
+            if popup.Position ~= position then popup.Position = position end
         end
-        local function fitDropdown(dropdown)
+        local function fitDropdown(dropdown, placementOnly)
             if not dropdown.VariantDropdown then return end
+            if placementOnly and not dropdown.Open then return end
             local extra = math.max(0, Library.MainTextSize - 10)
             dropdown.OptionHeight = (dropdown.BaseOptionHeight or dropdown.OptionHeight) + extra
             dropdown.SearchRowHeight = (dropdown.BaseSearchRowHeight or dropdown.SearchRowHeight) + extra
@@ -6901,7 +7027,9 @@ local Library; do
                 input.Object.Instance.Size = UDim2.new(1, 0, 0, dropdown.SearchRowHeight)
                 input.Outline.Instance.Size = UDim2.new(1, 0, 0, dropdown.SearchRowHeight)
             end
-            local visible = 0
+            local visible = dropdown.VisibleOptionCount or 0
+            if not placementOnly then
+            visible = 0
             for _, option in dropdown.OptionInstances do
                 option.Value.Instance.AutomaticSize = Enum.AutomaticSize.None
                 option.Value.Instance.Size = UDim2.new(1, 0, 0, dropdown.OptionHeight)
@@ -6911,6 +7039,8 @@ local Library; do
                     padding.PaddingTop, padding.PaddingBottom = UDim.new(0, 0), UDim.new(0, 0)
                 end
                 if option.Value.Instance.Visible then visible += 1 end
+            end
+            dropdown.VisibleOptionCount = visible
             end
             local items = dropdown.Items
             local bar = items.Outline.Instance
@@ -7124,8 +7254,8 @@ local Library; do
                     popup.Parent = Library.Other.Instance
                 end
             end
-            Library:Connect(dropdown.Items.Outline.Instance:GetPropertyChangedSignal("AbsolutePosition"), function() fitDropdown(dropdown) end)
-            Library:Connect(dropdown.Items.Outline.Instance:GetPropertyChangedSignal("AbsoluteSize"), function() fitDropdown(dropdown) end)
+            Library:Connect(dropdown.Items.Outline.Instance:GetPropertyChangedSignal("AbsolutePosition"), function() fitDropdown(dropdown, true) end)
+            Library:Connect(dropdown.Items.Outline.Instance:GetPropertyChangedSignal("AbsoluteSize"), function() fitDropdown(dropdown, true) end)
             Library:RegisterMainTextLayout(function()
                 if dropdown.Items.DropdownHolder.Instance.Parent then fitDropdown(dropdown) end
             end)
@@ -7690,13 +7820,10 @@ local Library; do
                         return Library.Tween(wrapper, updated, ...)
                     end
                 end
-                local elapsed = 0
-                previousConnect(Library, Services.RunService.RenderStepped, function(dt)
-                    elapsed += dt
-                    if elapsed < 1 / 60 then return end
-                    elapsed %= 1 / 60
+                local animationTask, animationDestroyed
+                animationTask = Library:CreateRenderTask(function()
                     local selected = Flags[picker.Flag .. "_Animation"] or "Solid"
-                    if selected == "Solid" then return end
+                    if selected ~= "Rainbow" and selected ~= "Fading" then animationTask:Stop(); return end
                     local rate = tonumber(Flags[picker.Flag .. "_AnimationSpeed"]) or 50
                     local phase = math.abs(math.sin(tick() * rate / 25))
                     animating = true
@@ -7711,7 +7838,20 @@ local Library; do
                         end
                     end
                     animating = false
-                end)
+                end, 1 / 60)
+                local function syncAnimation()
+                    local selected = Flags[picker.Flag .. "_Animation"]
+                    if not animationDestroyed and (selected == "Rainbow" or selected == "Fading") then animationTask:Start()
+                    else animationTask:Stop() end
+                end
+                local previousModeCallback = mode.Callback
+                mode.Callback = function(...)
+                    syncAnimation()
+                    return previousModeCallback(...)
+                end
+                picker.AnimationTask = animationTask
+                Library:Connect(root.Destroying, function() animationDestroyed = true; animationTask:Stop() end)
+                syncAnimation()
             end
             Library:RegisterMainTextLayout(function(size)
                 if not root.Parent then return end
@@ -7959,6 +8099,7 @@ local Library; do
             local pointerOverride
             local alpha = 1
             local enteredAt = 0
+            local stepTask
             local function target()
                 local pointer = pointerOverride or Services.UserInputService:GetMouseLocation()
                 local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
@@ -7982,6 +8123,7 @@ local Library; do
                 end
                 self.Open = true
                 items.Outline.Instance.Visible = true
+                if stepTask then stepTask:Start() end
             end
             function config:Hide()
                 self.Open = false
@@ -8003,7 +8145,7 @@ local Library; do
                 if self.Destroyed then return end
                 self.Destroyed, self.Open, self.Hovered = true, false, false
                 if activeTooltip == self then activeTooltip = nil end
-                if stepConnection and stepConnection.Connection then stepConnection.Connection:Disconnect() end
+                if stepTask then stepTask:Stop() end
                 items.Outline.Instance:Destroy()
                 if owner.Parent and self == self.Owner.TooltipInfo then self.Owner.TooltipInfo = nil end
             end
@@ -8012,17 +8154,21 @@ local Library; do
                 config.Hovered = true
                 enteredAt = os.clock()
                 pointerOverride = nil
+                stepTask:Start()
             end)
             Library:Connect(owner.MouseLeave, function() config:Hide() end)
             Library:Connect(owner.Destroying, function() config:Destroy() end)
             Library:Connect(items.Outline.Instance:GetPropertyChangedSignal("Visible"), function()
                 if not items.Outline.Instance.Visible then config.Open = false end
             end)
-            stepConnection = Library:Connect(Services.RunService.RenderStepped, function(dt)
+            stepTask = Library:CreateRenderTask(function(dt)
                 if config.Destroyed then return end
                 if config.Hovered and not config.Open and os.clock() - enteredAt >= config.Delay then config:Show() end
                 if not guiVisible(owner) or not Library.Elements.Instance.Enabled then config:Hide() end
-                if not items.Outline.Instance.Visible then return end
+                if not items.Outline.Instance.Visible then
+                    if not config.Hovered then stepTask:Stop() end
+                    return
+                end
                 local follow = 1 - math.exp(-dt / config.SmoothTime)
                 local destination = target() + (config.Open and Vector2.zero or Vector2.new(0, -4))
                 current = current:Lerp(destination, follow)
@@ -8033,6 +8179,7 @@ local Library; do
                     items.Outline.Instance.Visible = false
                     items.Outline.Instance.GroupTransparency = 1
                     if activeTooltip == config then activeTooltip = nil end
+                    stepTask:Stop()
                 end
             end)
             return config
@@ -8041,9 +8188,10 @@ local Library; do
 
     do
 
-Library.BuildControlGallery = function(Library, window)
+Library.SupportsDeferredControlGallery = true
+Library.BuildControlGallery = function(Library, window, existingTab)
     if window.ControlGallery then return window.ControlGallery end
-    local tab = window:AddTab({Text = "Controls", Columns = 2})
+    local tab = existingTab or window:AddTab({Text = "Controls", Columns = 2})
     local state = {}
     local gallery = {Tab = tab, State = state, Sliders = {}, Dropdowns = {}}
     window.ControlGallery = gallery
@@ -8111,29 +8259,44 @@ end
         end
         local function dragPanel(handle, root)
             local held, startInput, startPosition, target, current
+            local dragTask
+            local function stopDrag()
+                held, target = nil, nil
+                dragTask:Stop()
+            end
+            dragTask = Library:CreateRenderTask(function(dt)
+                if not target or not root.Instance.Parent or not root.Instance.Visible then stopDrag(); return end
+                current = current:Lerp(target, 1 - math.exp(-dt / 0.055))
+                local settled = (current - target).Magnitude < 0.05
+                if settled then current = target end
+                local position = UDim2.fromOffset(math.round(current.X), math.round(current.Y))
+                if root.Instance.Position ~= position then root.Instance.Position = position end
+                if settled then target = nil; dragTask:Stop() end
+            end)
             Library:Connect(handle.Instance.InputBegan, function(input)
                 if input.UserInputType ~= Enum.UserInputType.MouseButton1
                     and input.UserInputType ~= Enum.UserInputType.Touch then return end
                 held, startInput = input, input.Position
                 startPosition = Vector2.new(root.Instance.Position.X.Offset, root.Instance.Position.Y.Offset)
-                target, current = startPosition, startPosition
+                target, current = nil, startPosition
             end)
             Library:Connect(Services.UserInputService.InputChanged, function(input)
                 if not held or (input.UserInputType ~= Enum.UserInputType.MouseMovement and input ~= held) then return end
                 local delta = input.Position - startInput
-                local viewport = workspace.CurrentCamera.ViewportSize
+                local camera = workspace.CurrentCamera
+                local viewport = camera and camera.ViewportSize or Vector2.new(1920, 1080)
                 target = Vector2.new(math.clamp(startPosition.X + delta.X, 0, math.max(0, viewport.X - root.Instance.AbsoluteSize.X)),
                     math.clamp(startPosition.Y + delta.Y, 0, math.max(0, viewport.Y - root.Instance.AbsoluteSize.Y)))
+                dragTask:Start()
             end)
             Library:Connect(Services.UserInputService.InputEnded, function(input)
                 if held and (input == held or input.UserInputType == held.UserInputType) then held = nil end
             end)
-            Library:Connect(Services.RunService.RenderStepped, function(dt)
-                if not target or not root.Instance.Parent then return end
-                current = current:Lerp(target, 1 - math.exp(-dt / 0.055))
-                if (current - target).Magnitude < 0.05 then current = target; if not held then target = nil end end
-                root.Instance.Position = UDim2.fromOffset(math.round(current.X), math.round(current.Y))
+            Library:Connect(Services.UserInputService.WindowFocusReleased, function() held = nil end)
+            Library:Connect(root.Instance:GetPropertyChangedSignal("Visible"), function()
+                if not root.Instance.Visible then stopDrag() end
             end)
+            Library:Connect(root.Instance.Destroying, stopDrag)
         end
         local function panel(title, size, position)
             local palette = Library.MainStylePalette
@@ -8670,11 +8833,13 @@ end
                 UDim2.new(1, -16, 1, -19), false, true)
             cfg.Items.Viewport, cfg.Items.World, cfg.Items.Camera, cfg.Items.Status = viewport, world, camera, status
             local rotationConnections = {}
+            local rotationTask
             local function connectRotation(signal, callback)
                 local connection = owner:Connect(signal, callback).Connection
                 rotationConnections[#rotationConnections + 1] = connection
             end
             local function disconnectRotation()
+                if rotationTask then rotationTask:Stop() end
                 for _, connection in rotationConnections do connection:Disconnect() end
                 table.clear(rotationConnections)
             end
@@ -8685,31 +8850,53 @@ end
                 closeModelDropdown()
                 if cfg.SourceDropdown then cfg.SourceDropdown.Items.DropdownHolder.Instance:Destroy() end
             end
+            local function syncRotation()
+                local moving = (cfg.AutoRotate and cfg.RotationSpeed ~= 0 and not cfg.DraggingRotation)
+                    or math.abs(cfg.TargetYaw - cfg.RotationYaw) > 0.00001
+                if not cfg.Destroyed and cfg.Open and root.Visible and owner.Items.Instance.Enabled
+                    and cfg.Model and cfg.Model.Parent and moving then rotationTask:Start()
+                else rotationTask:Stop() end
+            end
+            rotationTask = owner:CreateRenderTask(function(dt) cfg:StepRotation(dt) end, 1 / 60)
+            function cfg:SetAutoRotate(enabled)
+                self.AutoRotate = enabled == true
+                syncRotation()
+            end
             function cfg:BeginRotation(x)
                 if self.Destroyed or not self.Open or not self.Model then return false end
                 self.DraggingRotation = true
                 self.TargetYaw = self.RotationYaw
                 self.DragStartX, self.DragStartYaw = x, self.RotationYaw
+                syncRotation()
                 return true
             end
             function cfg:DragRotation(x)
                 if not self.DraggingRotation or self.Destroyed then return end
                 self.TargetYaw = self.DragStartYaw + (x - self.DragStartX) * self.RotationSensitivity
+                syncRotation()
             end
             function cfg:EndRotation()
                 self.DraggingRotation = false
                 self.DragStartX, self.DragStartYaw = nil, nil
+                syncRotation()
             end
             local previousPreviewVisible = cfg.SetVisible
             function cfg:SetVisible(visible)
                 if visible ~= true then self:EndRotation(); self.TargetYaw = self.RotationYaw; closeModelDropdown() end
                 previousPreviewVisible(self, visible)
+                syncRotation()
             end
             function cfg:StepRotation(dt)
-                if self.Destroyed or not self.Open or not root.Visible or not self.Model or not self.Model.Parent then return end
+                if self.Destroyed or not self.Open or not root.Visible or not owner.Items.Instance.Enabled
+                    or not self.Model or not self.Model.Parent then rotationTask:Stop(); return end
                 dt = math.clamp(dt, 0, 0.1)
                 if self.AutoRotate and not self.DraggingRotation then self.TargetYaw += self.RotationSpeed * dt end
                 self.RotationYaw += (self.TargetYaw - self.RotationYaw) * (1 - math.exp(-dt / 0.06))
+                if not (self.AutoRotate and self.RotationSpeed ~= 0 and not self.DraggingRotation)
+                    and math.abs(self.TargetYaw - self.RotationYaw) <= 0.00001 then
+                    self.RotationYaw = self.TargetYaw
+                    rotationTask:Stop()
+                end
                 self.Model:PivotTo(CFrame.Angles(0, self.RotationYaw, 0))
             end
             connectRotation(viewport.Instance.InputBegan, function(input)
@@ -8725,8 +8912,9 @@ end
             connectRotation(Services.UserInputService.WindowFocusReleased, function() cfg:EndRotation() end)
             connectRotation(root:GetPropertyChangedSignal("Visible"), function()
                 if not root.Visible then cfg:EndRotation(); cfg.TargetYaw = cfg.RotationYaw; closeModelDropdown() end
+                syncRotation()
             end)
-            connectRotation(Services.RunService.RenderStepped, function(dt) cfg:StepRotation(dt) end)
+            connectRotation(owner.Items.Instance:GetPropertyChangedSignal("Enabled"), syncRotation)
             function cfg:UpdateCamera()
                 if not self.ModelInfo or not viewport.Instance.Parent then return end
                 local size = self.ModelInfo.Size
@@ -8785,6 +8973,7 @@ end
                     self.CurrentModelSource = selected
                     status.Instance.Visible = false
                     self:UpdateCamera()
+                    syncRotation()
                 end)
             end
             function cfg:Destroy()
@@ -9461,21 +9650,72 @@ end
 end
 
 Library.StartReferenceDeferredTab = function(self, tab)
-    if not tab or tab.ReferenceDeferredStarted or not tab.ReferenceDeferredBuild then return end
+    if self.Unloaded or self.Unloading then return false, "UI has been unloaded" end
+    if not tab or not tab.ReferenceDeferredBuild then return true end
+    if tab.ReferenceDeferredStarted then
+        return tab.ReferenceDeferredError == nil, tab.ReferenceDeferredError
+    end
+    local page = tab.Items and tab.Items.Page and tab.Items.Page.Instance
+    if not page or not page.Parent then return false, "Tab page is unavailable" end
     tab.ReferenceDeferredStarted = true
     tab.ReferenceBuilding = true
-    local page = tab.Items.Page.Instance
     page.Visible = false
-    task.spawn(function()
+    local owner = self
+    local thread = coroutine.create(function()
+        if owner.Unloaded or owner.Unloading then
+            tab.ReferenceBuilding = false
+            tab.ReferenceDeferredError = "UI has been unloaded"
+            return
+        end
         local ok, result = pcall(tab.ReferenceDeferredBuild)
+        if owner.Unloaded or owner.Unloading then
+            ok, result = false, "UI has been unloaded"
+        end
         tab.ReferenceDeferredReady = ok
         tab.ReferenceBuilding = false
-        if not ok then warn("[Visuals] " .. tostring(result)) end
-        if page.Parent and tab.Window and tab.Window.TabInfo == tab then
+        if not ok then
+            tab.ReferenceDeferredError = tostring(result)
+            warn("[UI] Could not build " .. tostring(tab.Text) .. ": " .. tostring(result))
+        end
+        if ok and page.Parent and tab.Window and tab.Window.TabInfo == tab then
             page.Visible = true
             if tab.ReferenceRelayout then tab.ReferenceRelayout() end
         end
     end)
+    tab.ReferenceDeferredThread = thread
+    table.insert(owner.Threads, thread)
+    task.spawn(thread)
+    return tab.ReferenceDeferredError == nil, tab.ReferenceDeferredError
+end
+
+-- Explicit config operations need every control registered, including unopened tabs.
+-- Ordinary startup and tab switching keep their deferred construction behavior.
+Library.EnsureReferenceDeferredTabs = function(self)
+    if self.Unloaded or self.Unloading then error("[Config] UI has been unloaded", 2) end
+    local window = self.ExampleWindow or self.Window
+    for _, tab in window and window.ReferenceTabs or {} do
+        if tab.ReferenceDeferredBuild then
+            local ok, err = self:StartReferenceDeferredTab(tab)
+            if not ok then
+                error("[Config] Could not build " .. tostring(tab.Text) .. ": " .. tostring(err), 2)
+            end
+        end
+    end
+    for _, tab in window and window.ReferenceTabs or {} do
+        if tab.ReferenceDeferredBuild then
+            if tab.ReferenceBuilding and coroutine.running() == tab.ReferenceDeferredThread then
+                error("[Config] Cannot save or load while constructing " .. tostring(tab.Text), 2)
+            end
+            while tab.ReferenceBuilding do
+                if self.Unloaded or self.Unloading then error("[Config] UI has been unloaded", 2) end
+                task.wait()
+            end
+            if self.Unloaded or self.Unloading then error("[Config] UI has been unloaded", 2) end
+            if not tab.ReferenceDeferredReady then
+                error("[Config] Could not build " .. tostring(tab.Text) .. ": " .. tostring(tab.ReferenceDeferredError or "construction did not complete"), 2)
+            end
+        end
+    end
 end
 
 return Library
