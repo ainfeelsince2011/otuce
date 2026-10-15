@@ -2093,6 +2093,7 @@ local Library; do
                 return self
             end
 
+            Library.LightweightWindowDrag = true
             Library.Draggify = function(self)
                 local instance = self.Instance
                 local dragging = false
@@ -2102,7 +2103,29 @@ local Library; do
                 local startPosition
                 local lastPosition
                 local dragAccumulator = 0
+                local preview
+                local dragTarget
                 Library.Dragging = false
+
+                local function clearPreview(commit)
+                    if preview then
+                        if commit and instance.Parent and dragTarget then
+                            instance.Position = dragTarget
+                        end
+                        preview:Destroy()
+                        preview = nil
+                        dragTarget = nil
+                        if instance.Parent then instance.Visible = true end
+                    end
+                end
+
+                local function stopDragging()
+                    if not dragging then return end
+                    dragging = false
+                    Library.Dragging = false
+                    dragInput = nil
+                    clearPreview(true)
+                end
 
                 Library:Connect(instance.InputBegan, function(input)
                     local kind = input.UserInputType
@@ -2117,15 +2140,50 @@ local Library; do
                     startPosition = instance.Position
                     lastPosition = startPosition
                     dragAccumulator = 1 / 60
+                    if Library.LightweightWindowDrag and instance.Name == "GamehaxxMainWindow" then
+                        local ghost = Instance.new("Frame")
+                        ghost.Name = "GamehaxxDragPreview"
+                        ghost.Size = instance.Size
+                        ghost.Position = instance.Position
+                        ghost.BackgroundColor3 = Color3.fromRGB(25, 25, 34)
+                        ghost.BackgroundTransparency = 0.2
+                        ghost.BorderSizePixel = 0
+                        ghost.ZIndex = 30
+                        ghost.Active = false
+                        local stroke = Instance.new("UIStroke")
+                        stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+                        stroke.Color = Library.Themes.Preset.Accent
+                        stroke.Thickness = 1
+                        stroke.Parent = ghost
+                        local label = Instance.new("TextLabel")
+                        label.BackgroundTransparency = 1
+                        label.Text = Library.Window and Library.Window.Title or "gamehaxx"
+                        label.TextColor3 = Color3.fromRGB(225, 225, 235)
+                        label.TextXAlignment = Enum.TextXAlignment.Left
+                        label.Font = Enum.Font.Code
+                        label.TextSize = 12
+                        label.Size = UDim2.new(1, -12, 0, 19)
+                        label.Position = UDim2.fromOffset(6, 1)
+                        label.ZIndex = 31
+                        label.Parent = ghost
+                        ghost.Parent = instance.Parent
+                        preview = ghost
+                        dragTarget = instance.Position
+                        instance.Visible = false
+                        for owner, popup in Library.PopupOwners or {} do
+                            if popup.Visible then
+                                popup.Visible = false
+                                owner.Open = false
+                            end
+                        end
+                    end
                 end)
 
                 Library:Connect(Services.UserInputService.InputEnded, function(input)
                     if not dragging then return end
                     if input == dragInput or
                         (dragInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseButton1) then
-                        dragging = false
-                        Library.Dragging = false
-                        dragInput = nil
+                        stopDragging()
                     end
                 end)
 
@@ -2141,6 +2199,7 @@ local Library; do
                     if not instance.Parent then
                         dragging = false
                         Library.Dragging = false
+                        if preview then preview:Destroy(); preview = nil end
                         return
                     end
                     dragAccumulator = math.min(dragAccumulator + dt, 1 / 30)
@@ -2152,7 +2211,12 @@ local Library; do
                         startPosition.Y.Scale, startPosition.Y.Offset + math.round(delta.Y)
                     )
                     if nextPosition ~= lastPosition then
-                        instance.Position = nextPosition
+                        if preview then
+                            preview.Position = nextPosition
+                            dragTarget = nextPosition
+                        else
+                            instance.Position = nextPosition
+                        end
                         lastPosition = nextPosition
                     end
                 end)
@@ -5272,7 +5336,7 @@ local Library; do
                 local items = tab.Items
                 local page = items.Page.Instance
                 page.Parent = window.Items.BackgroundInner.Instance
-                page.Visible = selected
+                page.Visible = selected and not tab.ReferenceBuilding
                 if items.PageBorder then items.PageBorder.Instance.Visible = selected end
                 if selected and tab.ReferenceRelayout then tab.ReferenceRelayout() end
                 local button = items.Button.Instance
@@ -9345,10 +9409,18 @@ end
 Library.StartReferenceDeferredTab = function(self, tab)
     if not tab or tab.ReferenceDeferredStarted or not tab.ReferenceDeferredBuild then return end
     tab.ReferenceDeferredStarted = true
+    tab.ReferenceBuilding = true
+    local page = tab.Items.Page.Instance
+    page.Visible = false
     task.spawn(function()
         local ok, result = pcall(tab.ReferenceDeferredBuild)
         tab.ReferenceDeferredReady = ok
+        tab.ReferenceBuilding = false
         if not ok then warn("[Visuals] " .. tostring(result)) end
+        if page.Parent and tab.Window and tab.Window.TabInfo == tab then
+            page.Visible = true
+            if tab.ReferenceRelayout then tab.ReferenceRelayout() end
+        end
     end)
 end
 
