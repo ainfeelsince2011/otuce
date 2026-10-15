@@ -2145,8 +2145,8 @@ local Library; do
                         ghost.Name = "GamehaxxDragPreview"
                         ghost.Size = instance.Size
                         ghost.Position = instance.Position
-                        ghost.BackgroundColor3 = Color3.fromRGB(25, 25, 34)
-                        ghost.BackgroundTransparency = 0.2
+                        ghost.BackgroundColor3 = Color3.fromRGB(19, 19, 27)
+                        ghost.BackgroundTransparency = 0
                         ghost.BorderSizePixel = 0
                         ghost.ZIndex = 30
                         ghost.Active = false
@@ -2166,6 +2166,14 @@ local Library; do
                         label.Position = UDim2.fromOffset(6, 1)
                         label.ZIndex = 31
                         label.Parent = ghost
+                        local line = Instance.new("Frame")
+                        line.Name = "DragPreviewTitleRule"
+                        line.BorderSizePixel = 0
+                        line.BackgroundColor3 = Library.Themes.Preset.Accent
+                        line.Position = UDim2.fromOffset(5, 21)
+                        line.Size = UDim2.new(1, -10, 0, 1)
+                        line.ZIndex = 31
+                        line.Parent = ghost
                         ghost.Parent = instance.Parent
                         preview = ghost
                         dragTarget = instance.Position
@@ -6053,8 +6061,10 @@ local Library; do
             bar.Size = UDim2.new(1, 0, 0, 15)
             flatten(bar)
             items.Value.Instance.AutomaticSize = Enum.AutomaticSize.None
+            items.Value.Instance.TextTruncate = Enum.TextTruncate.AtEnd
+            items.Value.Instance.TextWrapped = false
             items.Value.Instance.Position = UDim2.fromOffset(5, 0)
-            items.Value.Instance.Size = UDim2.new(1, -24, 1, 0)
+            items.Value.Instance.Size = UDim2.new(1, -32, 1, 0)
             local valuePadding = items.Value.Instance:FindFirstChildOfClass("UIPadding")
             if valuePadding then valuePadding.PaddingLeft = UDim.new(0, 0) end
             items.Indicator.Instance.AutomaticSize = Enum.AutomaticSize.None
@@ -6266,11 +6276,42 @@ local Library; do
             keyPopups[key] = true
             popup.Name = "KeybindSettings"
             popup.AutomaticSize = Enum.AutomaticSize.None
-            popup.Size = UDim2.fromOffset(180, 54)
+            popup.Size = UDim2.fromOffset(180, 63)
             popup.BackgroundColor3 = Themes.Preset.Outline
+            popup.BackgroundTransparency = 0
             popup.BorderSizePixel = 0
             popup.ClipsDescendants = false
-            popup.ZIndex = 40
+            popup.ZIndex = 45
+            local popupStroke = Instance.new("UIStroke")
+            popupStroke.Name = "KeybindOutline"
+            popupStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            popupStroke.LineJoinMode = Enum.LineJoinMode.Miter
+            popupStroke.Color = Library.MainStylePalette and Library.MainStylePalette.Border or Color3.fromRGB(76, 76, 96)
+            popupStroke.Thickness = 1
+            popupStroke.Transparency = 0
+            popupStroke.Parent = popup
+            local popupGlow = Instance.new("ImageLabel")
+            popupGlow.Name = "KeybindGlow"
+            popupGlow.Image = "rbxassetid://18245826428"
+            popupGlow.ScaleType = Enum.ScaleType.Slice
+            popupGlow.SliceCenter = Rect.new(21, 21, 79, 79)
+            popupGlow.ImageColor3 = Themes.Preset.Accent
+            popupGlow.ImageTransparency = 0.89
+            popupGlow.BackgroundTransparency = 1
+            popupGlow.BorderSizePixel = 0
+            popupGlow.Active = false
+            popupGlow.ZIndex = 39
+            popupGlow.Visible = false
+            popupGlow.Parent = Library.Elements.Instance
+            local function placePopupGlow()
+                popupGlow.Position = popup.Position + UDim2.fromOffset(-12, -12)
+                popupGlow.Size = popup.Size + UDim2.fromOffset(24, 24)
+                popupGlow.Visible = popup.Visible and popup.Parent ~= nil
+            end
+            Library:Connect(popup:GetPropertyChangedSignal("Position"), placePopupGlow)
+            Library:Connect(popup:GetPropertyChangedSignal("Size"), placePopupGlow)
+            Library:Connect(popup:GetPropertyChangedSignal("Visible"), placePopupGlow)
+            placePopupGlow()
             items.Top.Instance.Visible = false
             items.Inline.Instance.Position = UDim2.fromOffset(1, 1)
             items.Inline.Instance.Size = UDim2.new(1, -2, 1, -2)
@@ -6290,6 +6331,7 @@ local Library; do
             elements.AutomaticSize = Enum.AutomaticSize.None
             elements.Position = UDim2.fromOffset(4, 4)
             elements.Size = UDim2.new(1, -8, 1, -8)
+            elements.ClipsDescendants = false
             local layout = elements:FindFirstChildOfClass("UIListLayout")
             if layout then layout.Padding = UDim.new(0, 0) end
             local show = key.ShowInListControl
@@ -6306,6 +6348,14 @@ local Library; do
             mode.Items.Outline.Instance.Size = UDim2.new(1, 0, 0, 16)
             mode.OptionHeight = 18
             mode.PopupGap = 3
+            local modePopup = mode.Items.DropdownHolder.Instance
+            modePopup.ZIndex = 70
+            modePopup.BackgroundTransparency = 0
+            for _, child in ipairs(modePopup:GetDescendants()) do
+                if child:IsA("GuiObject") then
+                    child.ZIndex = math.max(child.ZIndex, 71)
+                end
+            end
 
             local revision = 0
             key.SetVisible = function(open, debounce)
@@ -6999,6 +7049,10 @@ local Library; do
                 dropdown.MultiItems = selected
                 dropdown.Value = multiple and selected or selected[1]
                 dropdown.Items.Value.Instance.Text = #selected == 0 and dropdown.Placeholder or (multiple and table.concat(selected, ", ") or selected[1])
+                dropdown.Items.Value.Instance.TextTruncate = Enum.TextTruncate.AtEnd
+                dropdown.Items.Value.Instance.TextWrapped = false
+                dropdown.Items.Value.Instance.AutomaticSize = Enum.AutomaticSize.None
+                dropdown.Items.Value.Instance.Size = UDim2.new(1, -32, 1, 0)
                 Flags[dropdown.Flag] = dropdown.Value
                 dropdown.Callback(dropdown.Value)
             end
