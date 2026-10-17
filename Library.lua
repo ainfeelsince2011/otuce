@@ -8753,56 +8753,499 @@ end
             data = data or {}
             local palette = self.MainStylePalette
             local cfg = panel("Skin Changer", data.Size or Vector2.new(440, 340), data.Position or UDim2.fromOffset(20, 508))
-            cfg.Skins = {}
-
-            local gridOutline = box(cfg.Items.BodyBackground.Instance, "SkinsGridOutline",
-                UDim2.fromOffset(2, 2), UDim2.new(1, -4, 1, -4), palette.Window)
-            local gridBackground = box(gridOutline.Instance, "SkinsGridBackground",
-                UDim2.fromOffset(0, 0), UDim2.fromScale(1, 1), palette.Window)
-            self:Create("UIStroke", {Parent = gridBackground.Instance,
-                Color = palette.Border, Thickness = 1,
-                ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-                LineJoinMode = Enum.LineJoinMode.Miter})
-            local grid = self:Create("ScrollingFrame", {Parent = gridBackground.Instance,
-                Position = UDim2.fromOffset(0, 0), Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-                BorderSizePixel = 0, ScrollBarThickness = 2, ScrollBarImageColor3 = Themes.Preset.Accent,
-                CanvasSize = UDim2.fromOffset(0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
-                ScrollingDirection = Enum.ScrollingDirection.Y})
-            self:Create("UIGridLayout", {Parent = grid.Instance, CellSize = UDim2.fromOffset(80, 80),
-                CellPadding = UDim2.fromOffset(6, 6), SortOrder = Enum.SortOrder.LayoutOrder})
-
-            local addCell = self:Create("Frame", {Parent = grid.Instance, Name = "AddSkinCell",
-                BackgroundTransparency = 1, BorderSizePixel = 0, LayoutOrder = -1,
-                Size = UDim2.fromOffset(80, 80)})
-            local add = self:Create("TextButton", {Parent = addCell.Instance, Text = "", BackgroundColor3 = palette.Border,
-                Position = UDim2.fromOffset(2, 2), BorderSizePixel = 0, AutoButtonColor = false,
-                Size = UDim2.fromOffset(80, 80)})
-            box(add.Instance, "CardBackground", UDim2.fromOffset(1, 1), UDim2.new(1, -2, 1, -2), palette.Section)
-            local circle = box(add.Instance, "AddCircle", UDim2.fromOffset(31, 24), UDim2.fromOffset(18, 18), Color3.new(1, 1, 1), 3)
-            self:Create("UICorner", {Parent = circle.Instance, CornerRadius = UDim.new(0.5, 0)})
-            box(circle.Instance, "PlusHorizontal", UDim2.fromOffset(4, 8), UDim2.fromOffset(10, 2), palette.Section, 2)
-            box(circle.Instance, "PlusVertical", UDim2.fromOffset(8, 4), UDim2.fromOffset(2, 10), palette.Section, 2)
-            text(add.Instance, "Add", UDim2.fromOffset(0, 51), UDim2.new(1, 0, 0, 14), false, true)
-            cfg.Items.Grid, cfg.Items.Add = grid, add
-            self:Connect(add.Instance.Activated, function() if data.OnAdd then data.OnAdd(cfg) end end)
-            function cfg:AddSkin(skin)
-                skin = skin or {}
-                local card = Library:Create("TextButton", {Parent = grid.Instance, Text = "", BackgroundColor3 = palette.Border,
-                    BorderSizePixel = 0, AutoButtonColor = false, LayoutOrder = #self.Skins + 1, Size = UDim2.fromOffset(80, 80)})
-                box(card.Instance, "CardBackground", UDim2.fromOffset(1, 1), UDim2.new(1, -2, 1, -2), palette.Section)
-                Library:Create("ImageLabel", {Parent = card.Instance, Position = UDim2.fromOffset(8, 6), Size = UDim2.fromOffset(64, 46),
-                    BackgroundTransparency = 1, BorderSizePixel = 0, Image = skin.Image or "", ScaleType = Enum.ScaleType.Fit, ZIndex = 3})
-                text(card.Instance, skin.Name or "Skin", UDim2.fromOffset(3, 54), UDim2.new(1, -6, 0, 16), false, true)
-                local entry = {Data = skin, Button = card}
-                table.insert(self.Skins, entry)
-                Library:Connect(card.Instance.Activated, function()
-                    self.Selected = entry
-                    for _, other in self.Skins do other.Button.Instance.BackgroundColor3 = other == entry and Themes.Preset.Accent or palette.Border end
-                    if skin.Callback then skin.Callback(skin) end
-                    if data.OnSelect then data.OnSelect(skin) end
+            local owner = self
+            local root = cfg.Items.Root.Instance
+            local body = cfg.Items.BodyBackground.Instance
+            -- These are the source menu's exact rarity colors and gradient stops.
+            -- Stock/Exceeding Rare intentionally use its Default fallback.
+            local rarities = {
+                Default = Color3.fromRGB(148, 148, 148), Consumer = Color3.fromRGB(176, 195, 217),
+                Industrial = Color3.fromRGB(94, 152, 217), ["Mil-Spec"] = Color3.fromRGB(75, 105, 255),
+                Restricted = Color3.fromRGB(136, 71, 255), Classified = Color3.fromRGB(211, 44, 230),
+                Covert = Color3.fromRGB(235, 75, 75), Contraband = Color3.fromRGB(228, 174, 57),
+            }
+            cfg.Catalog, cfg.Weapons, cfg.Saved, cfg.Skins = {}, {}, {}, {}
+            cfg.Provider, cfg.SkinStatus, cfg.View = {}, {}, "Saved"
+            cfg.RarityColors = rarities
+            local weaponCards, savedCards, galleryPages, categoryGroups, allCards = {}, {}, {}, {}, {}
+            local browserBuilt, busy, destroyed = false, false, false
+            local cardHeight, galleryHeight = 108, 100
+            local function rarityColor(rarity) return rarities[rarity or "Default"] or rarities.Default end
+            local function asset(value)
+                if value == nil then return "" end
+                value = tostring(value)
+                return value:match("^%d+$") and "rbxassetid://" .. value or value
+            end
+            local function nameOf(value)
+                if type(value) == "table" then return value.Name or value.name or value.Skin or value.skin end
+                return value
+            end
+            local function makeButton(parent, caption, position, size, callback)
+                local button = owner:Create("TextButton", {Parent = parent, Text = "", Position = position, Size = size,
+                    BackgroundColor3 = palette.Control, BorderSizePixel = 0, AutoButtonColor = false})
+                local stroke = owner:Create("UIStroke", {Parent = button.Instance, Color = palette.Border, Thickness = 1,
+                    ApplyStrokeMode = Enum.ApplyStrokeMode.Border, LineJoinMode = Enum.LineJoinMode.Miter})
+                local label = text(button.Instance, caption, UDim2.fromOffset(3, 0), UDim2.new(1, -6, 1, 0), false, true)
+                owner:Connect(button.Instance.Activated, function() if not destroyed then callback() end end)
+                owner:Connect(button.Instance.MouseEnter, function() stroke.Instance.Color = Themes.Preset.Accent end)
+                owner:Connect(button.Instance.MouseLeave, function() stroke.Instance.Color = palette.Border end)
+                return button, label
+            end
+            local header = box(body, "SkinsHeader", UDim2.fromOffset(2, 2), UDim2.new(1, -4, 0, 20), palette.Window)
+            local back = makeButton(header.Instance, "<", UDim2.fromOffset(0, 1), UDim2.fromOffset(20, 17), function()
+                if cfg.View == "Gallery" then cfg:OpenPicker() else cfg:ShowSaved() end
+            end)
+            local crumbs = text(header.Instance, "Saved skins", UDim2.fromOffset(27, 0), UDim2.new(1, -130, 1, 0), true)
+            local counter = text(header.Instance, "0 saved", UDim2.new(1, -98, 0, 0), UDim2.fromOffset(98, 20), false)
+            counter.Instance.TextXAlignment = Enum.TextXAlignment.Right
+            counter.Instance.TextColor3 = palette.Inactive
+            local search = owner:Create("TextBox", {Parent = body, Name = "WeaponSearch", Text = "", PlaceholderText = "Search weapons...",
+                Position = UDim2.fromOffset(3, 25), Size = UDim2.new(1, -6, 0, 19), BackgroundColor3 = palette.Section,
+                BorderSizePixel = 0, ClearTextOnFocus = false, FontFace = Fonts.Main, TextSize = owner.MainTextSize,
+                TextColor3 = Themes.Preset.TextMain, PlaceholderColor3 = palette.Inactive,
+                TextXAlignment = Enum.TextXAlignment.Left, Visible = false})
+            owner:Create("UIPadding", {Parent = search.Instance, PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5)})
+            owner:Create("UIStroke", {Parent = search.Instance, Color = palette.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+            local status = text(body, "", UDim2.new(0, 3, 1, -16), UDim2.new(1, -6, 0, 14), false)
+            status.Instance.TextColor3 = palette.Inactive
+            local function scroll(name, y)
+                return owner:Create("ScrollingFrame", {Parent = body, Name = name, Position = UDim2.fromOffset(3, y),
+                    Size = UDim2.new(1, -6, 1, -(y + 20)), BackgroundTransparency = 1, BorderSizePixel = 0,
+                    CanvasSize = UDim2.fromOffset(0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                    ScrollBarThickness = 2, ScrollBarImageColor3 = Themes.Preset.Accent,
+                    ScrollingDirection = Enum.ScrollingDirection.Y, ClipsDescendants = true})
+            end
+            local savedView, pickerView = scroll("SavedSkins", 26), scroll("Weapons", 50)
+            local galleryView = box(body, "SkinGallery", UDim2.fromOffset(3, 26), UDim2.new(1, -6, 1, -46), palette.Window)
+            local function grid(parent, height)
+                local layout = owner:Create("UIGridLayout", {Parent = parent, CellPadding = UDim2.fromOffset(6, 6),
+                    CellSize = UDim2.new(1 / 3, -6, 0, height), SortOrder = Enum.SortOrder.LayoutOrder})
+                local padding = owner:Create("UIPadding", {Parent = parent, PaddingTop = UDim.new(0, 1), PaddingLeft = UDim.new(0, 2),
+                    PaddingRight = UDim.new(0, 2), PaddingBottom = UDim.new(0, 2)})
+                layout.ReferenceHeight = height
+                function layout:Fit()
+                    if not parent.Parent then return end
+                    local gap = 6
+                    local columns = math.clamp(math.floor((parent.AbsoluteSize.X + 2) / (math.max(80, owner.MainTextSize * 9) + gap)), 1, 3)
+                    local width = math.max(1, math.floor((parent.AbsoluteSize.X - 4 - gap * (columns - 1)) / columns))
+                    local remainder = math.max(0, parent.AbsoluteSize.X - width * columns - gap * (columns - 1))
+                    padding.Instance.PaddingLeft = UDim.new(0, math.floor(remainder / 2))
+                    padding.Instance.PaddingRight = UDim.new(0, math.ceil(remainder / 2))
+                    self.Instance.CellSize = UDim2.fromOffset(width, self.ReferenceHeight)
+                end
+                owner:Connect(parent:GetPropertyChangedSignal("AbsoluteSize"), function() layout:Fit() end)
+                layout:Fit()
+                return layout
+            end
+            local savedGrid = grid(savedView.Instance, cardHeight)
+            local pickerLayout = owner:Create("UIListLayout", {Parent = pickerView.Instance,
+                SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 9)})
+            local empty = text(pickerView.Instance, "No weapon catalog is available.", UDim2.new(), UDim2.new(1, -4, 0, 34), false, true)
+            empty.Instance.LayoutOrder = 9999
+            local banner = box(galleryView.Instance, "SelectedSkin", UDim2.fromOffset(1, 1), UDim2.new(1, -5, 0, 92), palette.Border)
+            owner:Create("UICorner", {Parent = banner.Instance, CornerRadius = UDim.new(0, 6)})
+            local bannerFill = box(banner.Instance, "Background", UDim2.fromOffset(1, 1), UDim2.new(1, -2, 1, -2), palette.Control)
+            owner:Create("UICorner", {Parent = bannerFill.Instance, CornerRadius = UDim.new(0, 5)})
+            local stage = box(bannerFill.Instance, "PreviewStage", UDim2.fromOffset(5, 5), UDim2.new(0.46, -7, 1, -10), palette.Section)
+            owner:Create("UICorner", {Parent = stage.Instance, CornerRadius = UDim.new(0, 5)})
+            local stageGlow = box(stage.Instance, "RarityGradient", UDim2.new(), UDim2.fromScale(1, 1), rarities.Default)
+            owner:Create("UICorner", {Parent = stageGlow.Instance, CornerRadius = UDim.new(0, 5)})
+            owner:Create("UIGradient", {Parent = stageGlow.Instance, Rotation = 90,
+                Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.35, 1), NumberSequenceKeypoint.new(1, 0.72)})})
+            local preview = owner:Create("ImageLabel", {Parent = stage.Instance, Name = "SkinPreview", BackgroundTransparency = 1,
+                Position = UDim2.fromOffset(8, 6), Size = UDim2.new(1, -16, 1, -12), ScaleType = Enum.ScaleType.Fit,
+                BorderSizePixel = 0, Image = "", ZIndex = 3})
+            local info = box(bannerFill.Instance, "SkinInfo", UDim2.new(0.46, 4, 0, 5), UDim2.new(0.54, -10, 1, -10), palette.Control)
+            local skinName = text(info.Instance, "", UDim2.new(), UDim2.new(1, 0, 0, 17), true)
+            local weaponName = text(info.Instance, "", UDim2.fromOffset(0, 18), UDim2.new(1, 0, 0, 14), false)
+            weaponName.Instance.TextColor3 = palette.Inactive
+            local rarityPill = box(info.Instance, "RarityBadge", UDim2.fromOffset(0, 35), UDim2.fromOffset(95, 16), rarities.Default)
+            rarityPill.Instance.BackgroundTransparency = 0.85
+            owner:Create("UICorner", {Parent = rarityPill.Instance, CornerRadius = UDim.new(0, 8)})
+            local rarityLabel = text(rarityPill.Instance, "", UDim2.fromOffset(6, 0), UDim2.new(1, -12, 1, 0), true)
+            local apply, applyLabel = makeButton(info.Instance, "Apply", UDim2.new(0, 0, 1, -21), UDim2.new(1, 0, 0, 20), function() cfg:ApplySkin() end)
+            local skinScroll = owner:Create("ScrollingFrame", {Parent = galleryView.Instance, Name = "SkinCards",
+                Position = UDim2.fromOffset(0, 100), Size = UDim2.new(1, 0, 1, -100), BackgroundTransparency = 1,
+                BorderSizePixel = 0, CanvasSize = UDim2.fromOffset(0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                ScrollBarThickness = 2, ScrollBarImageColor3 = Themes.Preset.Accent, ScrollingDirection = Enum.ScrollingDirection.Y})
+            local function card(parent, title, subtitle, image, rarity, order)
+                local button = owner:Create("TextButton", {Parent = parent, Text = "", Name = "SkinCard", LayoutOrder = order or 0,
+                    BackgroundColor3 = palette.Control, BorderSizePixel = 0, AutoButtonColor = false})
+                owner:Create("UICorner", {Parent = button.Instance, CornerRadius = UDim.new(0, 6)})
+                local stroke = owner:Create("UIStroke", {Parent = button.Instance, Color = palette.Border, Thickness = 1,
+                    ApplyStrokeMode = Enum.ApplyStrokeMode.Border, LineJoinMode = Enum.LineJoinMode.Miter})
+                local stagePart = box(button.Instance, "Stage", UDim2.fromOffset(4, 4), UDim2.new(1, -8, 1, -40), palette.Section)
+                owner:Create("UICorner", {Parent = stagePart.Instance, CornerRadius = UDim.new(0, 5)})
+                local glowPart = box(stagePart.Instance, "RarityGradient", UDim2.new(), UDim2.fromScale(1, 1), rarityColor(rarity))
+                owner:Create("UICorner", {Parent = glowPart.Instance, CornerRadius = UDim.new(0, 5)})
+                glowPart.Instance.BackgroundTransparency = rarity and 0 or 1
+                owner:Create("UIGradient", {Parent = glowPart.Instance, Rotation = 90,
+                    Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.4, 1), NumberSequenceKeypoint.new(1, 0.78)})})
+                local imagePart = owner:Create("ImageLabel", {Parent = stagePart.Instance, Position = UDim2.fromOffset(8, 7),
+                    Size = UDim2.new(1, -16, 1, -14), BackgroundTransparency = 1, BorderSizePixel = 0,
+                    Image = asset(image), ScaleType = Enum.ScaleType.Fit, ZIndex = 3})
+                local titlePart = text(button.Instance, title or "", UDim2.new(0, 7, 1, -32), UDim2.new(1, -14, 0, 15), true)
+                local subtitlePart = text(button.Instance, subtitle or "", UDim2.new(0, 7, 1, -17), UDim2.new(1, -14, 0, 13), false)
+                titlePart.Instance.TextWrapped = true
+                titlePart.Instance.TextTruncate = Enum.TextTruncate.None
+                titlePart.Instance.TextYAlignment = Enum.TextYAlignment.Top
+                subtitlePart.Instance.TextColor3 = rarity and rarityColor(rarity) or palette.Inactive
+                local entry = {Button = button, Stroke = stroke, Image = imagePart, Title = titlePart, Subtitle = subtitlePart,
+                    Glow = glowPart, Selected = false}
+                function entry:SetSelected(selected)
+                    self.Selected = selected == true
+                    self.Stroke.Instance.Color = self.Selected and Themes.Preset.Accent or palette.Border
+                end
+                function entry:SetData(cardTitle, cardSubtitle, cardImage, cardRarity)
+                    self.Title.Instance.Text, self.Subtitle.Instance.Text = cardTitle or "", cardSubtitle or ""
+                    self.Image.Instance.Image = asset(cardImage)
+                    self.Glow.Instance.BackgroundColor3 = rarityColor(cardRarity)
+                    self.Glow.Instance.BackgroundTransparency = cardRarity and 0 or 1
+                    self.Subtitle.Instance.TextColor3 = cardRarity and rarityColor(cardRarity) or palette.Inactive
+                end
+                function entry:Fit(size)
+                    local line = size + 2
+                    local reserved = line * 3 + 10
+                    stagePart.Instance.Size = UDim2.new(1, -8, 1, -reserved)
+                    self.Title.Instance.Position = UDim2.new(0, 7, 1, -(line * 3 + 4))
+                    self.Title.Instance.Size = UDim2.new(1, -14, 0, line * 2)
+                    self.Subtitle.Instance.Position = UDim2.new(0, 7, 1, -(line + 3))
+                    self.Subtitle.Instance.Size = UDim2.new(1, -14, 0, line)
+                end
+                allCards[#allCards + 1] = entry
+                entry:Fit(owner.MainTextSize)
+                owner:Connect(button.Instance.MouseEnter, function()
+                    stroke.Instance.Color = Themes.Preset.Accent
+                    button.Instance.BackgroundColor3 = palette.Border
+                end)
+                owner:Connect(button.Instance.MouseLeave, function()
+                    entry:SetSelected(entry.Selected)
+                    button.Instance.BackgroundColor3 = palette.Control
                 end)
                 return entry
             end
+            local add = owner:Create("TextButton", {Parent = savedView.Instance, Name = "AddSkinCell", Text = "", LayoutOrder = -1000,
+                BackgroundColor3 = palette.Section, BorderSizePixel = 0, AutoButtonColor = false})
+            owner:Create("UICorner", {Parent = add.Instance, CornerRadius = UDim.new(0, 6)})
+            owner:Create("UIStroke", {Parent = add.Instance, Color = palette.Border, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+            local circle = box(add.Instance, "AddCircle", UDim2.new(0.5, -11, 0.5, -24), UDim2.fromOffset(22, 22), Color3.new(1, 1, 1), 3)
+            owner:Create("UICorner", {Parent = circle.Instance, CornerRadius = UDim.new(0.5, 0)})
+            box(circle.Instance, "PlusHorizontal", UDim2.fromOffset(5, 10), UDim2.fromOffset(12, 2), palette.Section, 4)
+            box(circle.Instance, "PlusVertical", UDim2.fromOffset(10, 5), UDim2.fromOffset(2, 12), palette.Section, 4)
+            text(add.Instance, "Add", UDim2.new(0, 0, 0.5, 10), UDim2.new(1, 0, 0, 16), false, true)
+            cfg.Items.Grid, cfg.Items.Add = savedView, add
+            cfg.Items.Breadcrumb, cfg.Items.Counter, cfg.Items.Search = crumbs, counter, search
+            cfg.Items.Saved, cfg.Items.Picker, cfg.Items.Gallery = savedView, pickerView, galleryView
+            cfg.Items.Apply, cfg.Items.Status, cfg.Items.SkinGrid = apply, status, skinScroll
+            cfg.Items.SkinPreview, cfg.Items.RarityLabel, cfg.Items.Back = preview, rarityLabel, back
+            local function show(view)
+                cfg.View = view
+                savedView.Instance.Visible, pickerView.Instance.Visible, galleryView.Instance.Visible = view == "Saved", view == "Picker", view == "Gallery"
+                search.Instance.Visible = view == "Picker"
+                back.Instance.Visible = view ~= "Saved"
+                status.Instance.Text = ""
+            end
+            local function resolveSkin(weapon, value)
+                local query = nameOf(value)
+                if not weapon then return nil end
+                for _, skin in weapon.Skins do
+                    if skin.Name == query then return skin end
+                end
+                return nil
+            end
+            local function updateBanner()
+                local weapon, skin = cfg.SelectedWeapon, cfg.SelectedSkin
+                if not weapon or not skin then return end
+                skinName.Instance.Text = skin.DisplayName or skin.Name
+                weaponName.Instance.Text = weapon.Name .. "  /  " .. weapon.Category
+                rarityLabel.Instance.Text = skin.Rarity or "Default"
+                local color = rarityColor(skin.Rarity)
+                rarityPill.Instance.BackgroundColor3, rarityLabel.Instance.TextColor3, stageGlow.Instance.BackgroundColor3 = color, color, color
+                preview.Instance.Image = asset(skin.Image or weapon.Icon)
+                preview.Instance.ImageColor3 = skin.Image and Color3.new(1, 1, 1) or palette.Inactive
+                local savedSkin = nameOf(cfg.Saved[weapon.Name])
+                local state = cfg.SkinStatus[weapon.Name]
+                applyLabel.Instance.Text = savedSkin == skin.Name and (state == "applied" and "Applied" or "Saved - apply") or "Apply"
+                for _, entry in cfg.Skins do entry:SetSelected(entry.Data == skin) end
+            end
+            function cfg:FilterWeapons(query)
+                query = tostring(query or ""):lower()
+                local total = 0
+                for _, group in categoryGroups do
+                    local count = 0
+                    for _, entry in group.Cards do
+                        local visible = query == "" or (entry.Weapon.Name .. " " .. entry.Weapon.Category):lower():find(query, 1, true) ~= nil
+                        entry.Button.Instance.Visible = visible
+                        if visible then count += 1 end
+                    end
+                    group.Frame.Instance.Visible = count > 0
+                    group.Count = count
+                    total += count
+                end
+                empty.Instance.Visible = total == 0
+                empty.Instance.Text = #self.Catalog == 0 and "No weapon catalog is available." or "No weapons found."
+                pickerView.Instance.CanvasPosition = Vector2.zero
+                if self.View == "Picker" then counter.Instance.Text = total .. " weapons" end
+            end
+            local function buildBrowser()
+                if browserBuilt then return end
+                browserBuilt = true
+                for index, category in cfg.Catalog do
+                    local extra = math.max(0, owner.MainTextSize - 10)
+                    local frame = box(pickerView.Instance, "WeaponCategory", UDim2.new(), UDim2.new(1, -4, 0, 0), palette.Window)
+                    frame.Instance.BackgroundTransparency = 1
+                    frame.Instance.LayoutOrder = index
+                    frame.Instance.AutomaticSize = Enum.AutomaticSize.Y
+                    local heading = text(frame.Instance, category.Name, UDim2.fromOffset(1, 0), UDim2.new(1, -2, 0, 17 + extra), true)
+                    heading.Instance.TextColor3 = Themes.Preset.Accent
+                    local holder = box(frame.Instance, "Weapons", UDim2.fromOffset(0, 21 + extra), UDim2.new(1, 0, 0, 0), palette.Window)
+                    holder.Instance.BackgroundTransparency = 1
+                    holder.Instance.AutomaticSize = Enum.AutomaticSize.Y
+                    local layout = grid(holder.Instance, 78 + extra * 3)
+                    local group = {Frame = frame, Cards = {}, Layout = layout, Header = heading, Holder = holder}
+                    categoryGroups[#categoryGroups + 1] = group
+                    for order, weapon in category.Weapons do
+                        local entry = card(holder.Instance, weapon.Name, #weapon.Skins .. " skins", weapon.Icon, nil, order)
+                        entry.Weapon = weapon
+                        entry.Image.Instance.ImageColor3 = palette.Inactive
+                        group.Cards[#group.Cards + 1], weaponCards[weapon.Name] = entry, entry
+                        owner:Connect(entry.Button.Instance.Activated, function() cfg:OpenWeapon(weapon.Name) end)
+                    end
+                end
+            end
+            function cfg:ShowSaved()
+                show("Saved")
+                crumbs.Instance.Text = "Saved skins"
+                self:RefreshSkins()
+            end
+            function cfg:OpenPicker()
+                buildBrowser()
+                show("Picker")
+                crumbs.Instance.Text = "Skins / Weapons"
+                self:FilterWeapons(search.Instance.Text)
+                if data.OnAdd then data.OnAdd(self) end
+            end
+            function cfg:OpenWeapon(weaponNameValue, selectedSkin)
+                local weapon = self.Weapons[weaponNameValue]
+                if not weapon then return false end
+                self.SelectedWeapon = weapon
+                for _, page in galleryPages do page.Instance.Visible = false end
+                local page = galleryPages[weapon.Name]
+                if not page then
+                    page = box(skinScroll.Instance, "WeaponSkins", UDim2.new(), UDim2.new(1, -1, 0, 0), palette.Window)
+                    page.Instance.BackgroundTransparency = 1
+                    page.Instance.AutomaticSize = Enum.AutomaticSize.Y
+                    page.Cards = {}
+                    page.Layout = grid(page.Instance, galleryHeight)
+                    for index, skin in weapon.Skins do
+                        local entry = card(page.Instance, skin.DisplayName or skin.Name, skin.Rarity or "Default", skin.Image or weapon.Icon, skin.Rarity or "Default", index)
+                        entry.Data = skin
+                        page.Cards[#page.Cards + 1] = entry
+                        owner:Connect(entry.Button.Instance.Activated, function() cfg:SelectSkin(skin.Name) end)
+                    end
+                    galleryPages[weapon.Name] = page
+                end
+                page.Instance.Visible = true
+                self.Skins = page.Cards
+                self.SelectedSkin = resolveSkin(weapon, selectedSkin or self.Saved[weapon.Name]) or weapon.Skins[1]
+                self.Selected = self.SelectedSkin
+                show("Gallery")
+                crumbs.Instance.Text = "Skins / " .. weapon.Name
+                counter.Instance.Text = #weapon.Skins .. " skins"
+                skinScroll.Instance.CanvasPosition = Vector2.zero
+                updateBanner()
+                return true
+            end
+            function cfg:SelectSkin(value)
+                local skin = resolveSkin(self.SelectedWeapon, value)
+                if not skin then return false end
+                self.SelectedSkin, self.Selected = skin, skin
+                updateBanner()
+                status.Instance.Text = ""
+                if data.OnSelect then data.OnSelect(skin, self.SelectedWeapon) end
+                if skin.Callback then skin.Callback(skin) end
+                return true
+            end
+            function cfg:SetSavedSkins(saved)
+                self.Saved = type(saved) == "table" and saved or {}
+                for _, entry in savedCards do entry.Button.Instance.Visible = false end
+                local count = 0
+                for _, category in self.Catalog do for _, weapon in category.Weapons do
+                    local savedSkin = self.Saved[weapon.Name]
+                    local skin = resolveSkin(weapon, savedSkin)
+                    if skin then
+                        count += 1
+                        local entry = savedCards[weapon.Name]
+                        if not entry then
+                            entry = card(savedView.Instance, weapon.Name, skin.Name, skin.Image or weapon.Icon, skin.Rarity, count)
+                            entry.Weapon = weapon
+                            savedCards[weapon.Name] = entry
+                            local remove = makeButton(entry.Button.Instance, "x", UDim2.new(1, -20, 0, 3), UDim2.fromOffset(16, 16), function() cfg:RemoveSkin(weapon.Name) end)
+                            remove.Instance.ZIndex = 6
+                            for _, object in remove.Instance:GetDescendants() do if object:IsA("GuiObject") then object.ZIndex = 7 end end
+                            owner:Connect(entry.Button.Instance.Activated, function() cfg:OpenWeapon(weapon.Name, cfg.Saved[weapon.Name]) end)
+                            entry.Remove = remove
+                        end
+                        entry.Data = skin
+                        entry:SetData(weapon.Name, skin.DisplayName or skin.Name, skin.Image or weapon.Icon, skin.Rarity)
+                        entry.Button.Instance.LayoutOrder, entry.Button.Instance.Visible = count, true
+                    end
+                end end
+                self.SavedCount = count
+                if self.View == "Saved" then counter.Instance.Text = count .. " saved" end
+                updateBanner()
+            end
+            function cfg:RefreshSkins()
+                local getSaved = self.Provider and self.Provider.GetSaved
+                if type(getSaved) == "function" then
+                    local ok, saved = pcall(getSaved)
+                    if ok and type(saved) == "table" then self:SetSavedSkins(saved); return true end
+                    if not ok then status.Instance.Text = "Could not read saved skins: " .. tostring(saved) end
+                    return false
+                end
+                self:SetSavedSkins(self.Saved)
+                return true
+            end
+            function cfg:SetSkinStatus(weaponNameValue, state, message)
+                self.SkinStatus[weaponNameValue] = state
+                if self.SelectedWeapon and self.SelectedWeapon.Name == weaponNameValue then
+                    updateBanner()
+                    if message then status.Instance.Text = tostring(message) end
+                end
+            end
+            function cfg:ApplySkin(weaponNameValue, skinNameValue)
+                if busy then return false, "A skin update is already running." end
+                local weapon = weaponNameValue and self.Weapons[weaponNameValue] or self.SelectedWeapon
+                local skin = resolveSkin(weapon, skinNameValue) or (weapon == self.SelectedWeapon and self.SelectedSkin)
+                if not weapon or not skin then return false, "Select a skin first." end
+                local callback = self.Provider and self.Provider.ApplySkin
+                if type(callback) ~= "function" then status.Instance.Text = "Skin provider is not available."; return false, status.Instance.Text end
+                busy, applyLabel.Instance.Text = true, "Applying..."
+                local ok, success, message, state = pcall(callback, weapon.Name, skin.Name, skin)
+                busy = false
+                if destroyed then return false, "Skin window was closed." end
+                if not ok then message, success = tostring(success), false end
+                if success then
+                    self.Saved[weapon.Name] = skin.Name
+                    self.SkinStatus[weapon.Name] = state == "applied" and "applied" or "saved"
+                    self:RefreshSkins()
+                    if self.OnSkinChanged then self.OnSkinChanged(weapon.Name, skin.Name, self.SkinStatus[weapon.Name]) end
+                end
+                updateBanner()
+                status.Instance.Text = tostring(message or (success and "Skin saved." or "Skin could not be applied."))
+                return success == true, message, state
+            end
+            function cfg:RemoveSkin(weaponNameValue)
+                if busy then return false, "A skin update is already running." end
+                local callback = self.Provider and self.Provider.RemoveSkin
+                if type(callback) ~= "function" then status.Instance.Text = "Skin provider is not available."; return false, status.Instance.Text end
+                busy = true
+                local ok, success, message = pcall(callback, weaponNameValue)
+                busy = false
+                if destroyed then return false end
+                if not ok then message, success = tostring(success), false end
+                if success then
+                    self.Saved[weaponNameValue], self.SkinStatus[weaponNameValue] = nil, nil
+                    self:RefreshSkins()
+                    if self.OnSkinChanged then self.OnSkinChanged(weaponNameValue, nil, "removed") end
+                end
+                status.Instance.Text = tostring(message or (success and "Saved skin removed." or "Skin could not be removed."))
+                return success == true, message
+            end
+            function cfg:SetSkinProvider(provider)
+                self.Provider = type(provider) == "table" and provider or {}
+                self:RefreshSkins()
+                return self
+            end
+            function cfg:SetCatalog(catalog)
+                for _, group in categoryGroups do group.Frame.Instance:Destroy() end
+                for _, page in galleryPages do page.Instance:Destroy() end
+                for _, entry in savedCards do entry.Button.Instance:Destroy() end
+                table.clear(categoryGroups); table.clear(galleryPages); table.clear(savedCards); table.clear(weaponCards); table.clear(allCards)
+                self.Catalog, self.Weapons, self.Skins = {}, {}, {}
+                self.SelectedWeapon, self.SelectedSkin, self.Selected = nil, nil, nil
+                browserBuilt = false
+                for _, category in type(catalog) == "table" and catalog or {} do
+                    local normalized = {Name = tostring(category.Name or category.name or "Weapons"), Weapons = {}}
+                    for _, weapon in category.Weapons or category.weapons or {} do
+                        local entry = {Name = tostring(weapon.Name or weapon.name or ""), Icon = weapon.Icon or weapon.icon,
+                            Category = normalized.Name, Skins = {}, Data = weapon}
+                        for _, skin in weapon.Skins or weapon.skins or {} do
+                            if type(skin) == "table" and (skin.Name or skin.name) then
+                                local skinData = table.clone(skin)
+                                skinData.Name = tostring(skin.Name or skin.name)
+                                skinData.Rarity, skinData.Image = skin.Rarity or skin.rarity or "Default", skin.Image or skin.image
+                                entry.Skins[#entry.Skins + 1] = skinData
+                            end
+                        end
+                        if entry.Name ~= "" and #entry.Skins > 0 then normalized.Weapons[#normalized.Weapons + 1], self.Weapons[entry.Name] = entry, entry end
+                    end
+                    if #normalized.Weapons > 0 then self.Catalog[#self.Catalog + 1] = normalized end
+                end
+                self:ShowSaved()
+                return self
+            end
+            -- Compatibility for callers that already add one saved card at a time.
+            function cfg:AddSkin(skin)
+                if type(skin) ~= "table" then return nil end
+                local weapon = skin.Weapon or skin.WeaponName
+                if not weapon or not self.Weapons[weapon] then return nil end
+                self.Saved[weapon] = skin.Name or skin.Skin
+                self:SetSavedSkins(self.Saved)
+                return savedCards[weapon]
+            end
+            local function fit(size)
+                if destroyed then return end
+                local extra = math.max(0, (size or owner.MainTextSize) - 10)
+                local headerHeight, buttonHeight = 20 + extra, 20 + extra
+                local bannerHeight = 92 + extra * 4
+                header.Instance.Size = UDim2.new(1, -4, 0, headerHeight)
+                back.Instance.Size = UDim2.fromOffset(20 + extra, 17 + extra)
+                crumbs.Instance.Position = UDim2.fromOffset(27 + extra, 0)
+                crumbs.Instance.Size = UDim2.new(1, -(130 + extra * 5), 1, 0)
+                counter.Instance.Position = UDim2.new(1, -(98 + extra * 4), 0, 0)
+                counter.Instance.Size = UDim2.fromOffset(98 + extra * 4, headerHeight)
+                search.Instance.Position = UDim2.fromOffset(3, 25 + extra)
+                search.Instance.Size = UDim2.new(1, -6, 0, 19 + extra)
+                savedView.Instance.Position = UDim2.fromOffset(3, 26 + extra)
+                savedView.Instance.Size = UDim2.new(1, -6, 1, -(46 + extra * 2))
+                pickerView.Instance.Position = UDim2.fromOffset(3, 50 + extra * 2)
+                pickerView.Instance.Size = UDim2.new(1, -6, 1, -(70 + extra * 3))
+                galleryView.Instance.Position = UDim2.fromOffset(3, 26 + extra)
+                galleryView.Instance.Size = UDim2.new(1, -6, 1, -(46 + extra * 2))
+                status.Instance.Position = UDim2.new(0, 3, 1, -(16 + extra))
+                status.Instance.Size = UDim2.new(1, -6, 0, 14 + extra)
+                banner.Instance.Size = UDim2.new(1, -5, 0, bannerHeight)
+                skinName.Instance.Size = UDim2.new(1, 0, 0, 17 + extra)
+                weaponName.Instance.Position = UDim2.fromOffset(0, 18 + extra)
+                weaponName.Instance.Size = UDim2.new(1, 0, 0, 14 + extra)
+                rarityPill.Instance.Position = UDim2.fromOffset(0, 35 + extra * 2)
+                rarityPill.Instance.Size = UDim2.fromOffset(95 + extra * 7, 16 + extra)
+                apply.Instance.Position = UDim2.new(0, 0, 1, -(buttonHeight + 1))
+                apply.Instance.Size = UDim2.new(1, 0, 0, buttonHeight)
+                skinScroll.Instance.Position = UDim2.fromOffset(0, bannerHeight + 8)
+                skinScroll.Instance.Size = UDim2.new(1, 0, 1, -(bannerHeight + 8))
+                cardHeight, galleryHeight = 108 + extra * 3, 100 + extra * 3
+                savedGrid.ReferenceHeight = cardHeight
+                savedGrid:Fit()
+                for _, page in galleryPages do page.Layout.ReferenceHeight = galleryHeight; page.Layout:Fit() end
+                for _, group in categoryGroups do
+                    group.Layout.ReferenceHeight = 78 + extra * 3
+                    group.Layout:Fit()
+                    group.Header.Instance.Size = UDim2.new(1, -2, 0, 17 + extra)
+                    group.Holder.Instance.Position = UDim2.fromOffset(0, 21 + extra)
+                end
+                for _, entry in allCards do if entry.Button.Instance.Parent then entry:Fit(size or owner.MainTextSize) end end
+                for _, entry in savedCards do if entry.Selected then entry:SetSelected(true) end end
+                for _, entry in cfg.Skins do entry:SetSelected(entry.Selected) end
+            end
+            owner:RegisterMainTextLayout(fit)
+            owner:Connect(add.Instance.Activated, function() cfg:OpenPicker() end)
+            owner:Connect(search.Instance:GetPropertyChangedSignal("Text"), function() cfg:FilterWeapons(search.Instance.Text) end)
+            owner:Connect(root.Destroying, function() destroyed = true end)
+            cfg:SetCatalog(data.Catalog or {})
+            if data.Provider then cfg:SetSkinProvider(data.Provider) end
+            fit(owner.MainTextSize)
             return cfg
         end
 
